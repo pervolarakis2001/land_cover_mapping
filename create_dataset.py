@@ -22,7 +22,7 @@ paths = [SATELITE_IMG_1, SATELITE_IMG_2, SATELITE_IMG_3, SATELITE_IMG_4]
 #         f"/home/ubuntu/bdrs_ex_1/data/processed/pansharpened_tiles/pansharpened_{i}.tif",
 #         f"/home/ubuntu/bdrs_ex_1/data/processed/cloud_cleaned_tiles/cleaned_tile_{i}.tif",
 #     )
-
+d = 5
 # reprojecting data
 covered_area = []
 gt_info = utils.get_tiff_info(
