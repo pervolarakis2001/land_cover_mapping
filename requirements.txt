@@ -1,0 +1,7 @@
+rasterio
+matplotlib
+shapely
+rtree 
+torch 
+torchvision
+s2cloudless
