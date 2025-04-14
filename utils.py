@@ -3,11 +3,12 @@ from rasterio.transform import from_origin
 import numpy as np
 from rasterio.warp import calculate_default_transform, reproject
 from rasterio.enums import Resampling
-import os
+import os, gc
 from rasterio.windows import Window
 from shapely.geometry import box
 import matplotlib.pyplot as plt
 from s2cloudless import S2PixelCloudDetector
+from tqdm import tqdm
 
 
 def read_multiband_tiff(filepath):
@@ -111,98 +112,102 @@ def get_tiff_info(filepath):
         return info
 
 
-def pansharpen(filepath, output_path):
+def pansharpening(src_path, classi_path, output_path):
     """
-    Resamples all Sentinel-2 bands in a folder to 10m resolution using bilinear interpolation
-    and stacks them into a single multiband GeoTIFF file.
-
-    Parameters:
-        filepath (str): Path to the folder containing Sentinel-2 .jp2 files (IMG_DATA directory).
-        output_path (str): Path to save the output multiband GeoTIFF (.tif) file.
-
-    Returns:
-        None. A GeoTIFF file is written to 'output_path' containing all bands at 10m resolution.
+    Performs pansharpening and cloud masking on raw Sentinel-2 imagery:
+    - Reads spectral bands and applies cloud masks using MSK_CLASSI_B00.jp2
+    - Masks out cloud-affected pixels at each band's native resolution
+    - Resamples only the valid (cloud-free) pixels to a uniform 10m resolution
+    - Stacks the cleaned bands into a multiband GeoTIFF
+    - Saves the final cloud-free, pansharpened output to disk
     """
 
-    for f in os.listdir(filepath):
-        if "TCI.jp2" in f:
-            continue
-        if "_B02.jp2" in f:
-            ref_path = os.path.join(filepath, f)
-            break
+    # Find B02 (10m) as reference
+    ref_path = next(
+        os.path.join(src_path, f)
+        for f in os.listdir(src_path)
+        if f.endswith("_B02.jp2")
+    )
     with rasterio.open(ref_path) as ref:
         ref_height = ref.height
         ref_width = ref.width
         ref_transform = ref.transform
         ref_crs = ref.crs
 
-    pansharpen_array = []
-    for f in os.listdir(filepath):
-        if "TCI.jp2" in f:
-            continue
-        with rasterio.open(os.path.join(filepath, f)) as src:
-            original_res = src.res[0]
-            if original_res == 10:
-                data = src.read(1)
-            else:
-                data = src.read(
-                    out_shape=(1, ref_height, ref_width), resampling=Resampling.bilinear
-                )[0]
-        pansharpen_array.append(data.astype(np.float32))
+    # Load and resample cloud masks to 10m
+    with rasterio.open(classi_path) as mask_src:
+        opaque_mask = np.empty((ref_height, ref_width), dtype=np.uint8)
+        cirrus_mask = np.empty((ref_height, ref_width), dtype=np.uint8)
 
-    stacked = np.stack(pansharpen_array)
-
-    write_multiband_tiff(output_path, stacked, ref_transform, ref_crs)
-
-
-def cloud_cleaning(path, output_path):
-    """
-    Applies cloud masking using s2cloudless to a pansharpened Sentinel-2 image read from a GeoTIFF.
-
-    Parameters:
-        tif_path (str): Path to the input pansharpened multiband GeoTIFF image.
-
-    Returns:
-        masked_array (np.ndarray): Array with clouds masked (shape: bands, height, width), np.nan in cloudy pixels.
-        cloud_mask (np.ndarray): 2D binary cloud mask where True = cloud.
-    """
-
-    # Load the pansharpened TIFF image
-    with rasterio.open(path) as src:
-        pansharpened_array = src.read().astype(np.float32)
-        crs = src.crs
-        transform = src.transform
-
-    # Ensure enough bands are present
-    if pansharpened_array.shape[0] < 13:
-        raise ValueError(
-            f"Expected at least 13 bands, found {pansharpened_array.shape[0]}."
+        reproject(
+            source=mask_src.read(1),
+            destination=opaque_mask,
+            src_transform=mask_src.transform,
+            src_crs=mask_src.crs,
+            dst_transform=ref_transform,
+            dst_crs=ref_crs,
+            resampling=Resampling.nearest,
+        )
+        reproject(
+            source=mask_src.read(2),
+            destination=cirrus_mask,
+            src_transform=mask_src.transform,
+            src_crs=mask_src.crs,
+            dst_transform=ref_transform,
+            dst_crs=ref_crs,
+            resampling=Resampling.nearest,
         )
 
-    # Reorder to (H, W, B)
-    image = np.moveaxis(pansharpened_array, 0, -1)
+    cloud_mask = (opaque_mask == 1) | (cirrus_mask == 1)
+    del opaque_mask, cirrus_mask
+    gc.collect()
 
-    # Normalize reflectance if in 0–10000 range
-    if image.max() > 1.0:
-        image /= 10000.0
+    band_arrays = []
+    for f in sorted(os.listdir(src_path)):
+        if "TCI.jp2" in f or not f.endswith(".jp2"):
+            continue
 
-    # Init s2cloudless detector
-    cloud_detector = S2PixelCloudDetector(
-        threshold=0.4, average_over=4, dilation_size=2, all_bands=True
-    )
+        file_path = os.path.join(src_path, f)
+        with rasterio.open(file_path) as src:
+            band_native = src.read(1)
+            native_shape = band_native.shape
 
-    # Get cloud probability and mask
-    cloud_mask = cloud_detector.get_cloud_masks(image[np.newaxis, ...])[0]
+            # Build cloud mask at native resolution
+            if src.res[0] != 10:
+                band_mask = np.empty(native_shape, dtype=np.uint8)
+                reproject(
+                    source=cloud_mask.astype(np.uint8),
+                    destination=band_mask,
+                    src_transform=ref_transform,
+                    src_crs=ref_crs,
+                    dst_transform=src.transform,
+                    dst_crs=src.crs,
+                    resampling=Resampling.nearest,
+                )
+                clean_band = np.where(band_mask == 0, band_native, np.nan)
+            else:
+                clean_band = np.where(~cloud_mask, band_native, np.nan)
 
-    # Apply the mask
-    masked_image = np.copy(image)
-    masked_image[cloud_mask] = np.nan
+            # Resample to 10m if needed
+            if src.res[0] != 10:
+                clean_band = rasterio.warp.reproject(
+                    source=clean_band,
+                    destination=np.empty((ref_height, ref_width), dtype=np.float32),
+                    src_transform=src.transform,
+                    src_crs=src.crs,
+                    dst_transform=ref_transform,
+                    dst_crs=ref_crs,
+                    resampling=Resampling.bilinear,
+                )[0]
 
-    # Return to original shape (bands, height, width)
-    masked_array = np.moveaxis(masked_image, -1, 0)
+            band_arrays.append(clean_band.astype(np.float32))
+            del band_native, clean_band
+            gc.collect()
 
-    write_multiband_tiff(output_path, masked_array, transform, crs)
-    return masked_array, cloud_mask
+    stack = np.stack(band_arrays)
+    write_multiband_tiff(output_path, stack, ref_transform, ref_crs)
+    del stack, band_arrays, cloud_mask
+    gc.collect()
 
 
 def reproject_raster(
@@ -280,7 +285,65 @@ def reproject_raster(
                 )
 
 
-def visualize_tif(tif_path, output_plot_path="plot.png", bands=(3, 2, 1)):
+def create_patches_from_tile(tile_path, output_dir, patch_size=256, max_nan_ratio=0.25):
+    """
+    Splits a raster tile into patches of patch_size x patch_size and saves only those
+    with acceptable amount of NaNs (masked/cloudy pixels).
+
+    Parameters:
+        tile_path (str): Path to the input GeoTIFF image (already cloud-masked).
+        output_dir (str): Directory to save the extracted patches.
+        patch_size (int): Size of the square patches (default: 256).
+        max_nan_ratio (float): Max allowed NaN ratio (0–1) in a patch (default: 0.25).
+
+    Returns:
+        int: Number of patches saved.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+
+    with rasterio.open(tile_path) as src:
+        height, width = src.height, src.width
+        profile = src.profile
+        bands = src.count
+        nodata_val = src.nodata
+
+        patch_id = 0
+        for top in tqdm(range(0, height, patch_size)):
+            for left in range(0, width, patch_size):
+                window = Window(left, top, patch_size, patch_size)
+
+                if left + patch_size > width or top + patch_size > height:
+                    continue  # skip patches at the edge
+
+                patch = src.read(
+                    window=window
+                )  # shape: (bands, patch_size, patch_size)
+
+                # Check for NaN/clouds
+                nan_ratio = np.sum(patch == nodata_val) / patch.size
+                if nan_ratio > max_nan_ratio:
+                    continue  # skip cloudy patch
+
+                # Save patch
+                patch_transform = src.window_transform(window)
+                patch_profile = profile.copy()
+                patch_profile.update(
+                    {
+                        "height": patch_size,
+                        "width": patch_size,
+                        "transform": patch_transform,
+                    }
+                )
+
+                patch_path = os.path.join(output_dir, f"patch_{patch_id:04d}.npy")
+                np.save(patch_path, patch)
+
+                patch_id += 1
+
+    return patch_id
+
+
+def visualize_tif(tif_path, output_plot_path="plot.png", bands=(4, 3, 2)):
     """
     Visualize and save a .tif file as an image plot.
 
