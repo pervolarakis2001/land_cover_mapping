@@ -1,4 +1,4 @@
-import utils
+import utils.utils as utils
 from rasterio.warp import transform_bounds
 from shapely.geometry import box
 import numpy as np
@@ -51,60 +51,62 @@ input_tiles = [
 final_dir = "data/processed/final_tiles"
 covered_area = []
 
-for i, tile_path in enumerate(input_tiles):
-    # Get original tile bounds and reproject
-    tile_info = utils.get_tiff_info(tile_path)
-    sat_bounds = transform_bounds(
-        tile_info["crs"], gt_crs, *tile_info["bounds"])
-    sat_box = box(*sat_bounds)
+# for i, tile_path in enumerate(input_tiles):
+#     # Get original tile bounds and reproject
+#     tile_info = utils.get_tiff_info(tile_path)
+#     sat_bounds = transform_bounds(
+#         tile_info["crs"], gt_crs, *tile_info["bounds"])
+#     sat_box = box(*sat_bounds)
 
-    intersection = gt_box.intersection(sat_box)
+#     intersection = gt_box.intersection(sat_box)
 
-    final_path = f"{final_dir}/tile_{i}.tif"
-    if i == 0:
-        utils.reproject_raster(
-            src_path=tile_path,
-            dst_path=final_path,
-            dst_crs=gt_crs,
-            target_bounds=intersection.bounds,
-            target_resolution=gsd
-        )
-        covered_area.append(intersection)
-        continue
+#     final_path = f"{final_dir}/tile_{i}.tif"
+#     if i == 0:
+#         utils.reproject_raster(
+#             src_path=tile_path,
+#             dst_path=final_path,
+#             dst_crs=gt_crs,
+#             target_bounds=intersection.bounds,
+#             target_resolution=gsd
+#         )
+#         covered_area.append(intersection)
+#         continue
 
-    tmp_path = "data/tmp_reprojected_tile.tif"
+#     tmp_path = "data/tmp_reprojected_tile.tif"
 
-    # Reproject and crop to GT
-    utils.reproject_raster(
-        src_path=tile_path,
-        dst_path=tmp_path,
-        dst_crs=gt_crs,
-        target_bounds=intersection.bounds,
-        target_resolution=gsd
-    )
+#     # Reproject and crop to GT
+#     utils.reproject_raster(
+#         src_path=tile_path,
+#         dst_path=tmp_path,
+#         dst_crs=gt_crs,
+#         target_bounds=intersection.bounds,
+#         target_resolution=gsd
+#     )
 
-    # Remove overlap with previous
-    non_overlap = intersection.difference(unary_union(covered_area))
+#     # Remove overlap with previous
+#     non_overlap = intersection.difference(unary_union(covered_area))
 
-    if non_overlap.is_empty:
-        os.remove(tmp_path)
-        continue
+#     if non_overlap.is_empty:
+#         os.remove(tmp_path)
+#         continue
 
-    # Save only the non-overlapping part
-    utils.reproject_raster(
-        src_path=tmp_path,
-        dst_path=final_path,
-        dst_crs=gt_crs,
-        target_bounds=non_overlap.bounds,
-        target_resolution=gsd,
-    )
+#     # Save only the non-overlapping part
+#     utils.reproject_raster(
+#         src_path=tmp_path,
+#         dst_path=final_path,
+#         dst_crs=gt_crs,
+#         target_bounds=non_overlap.bounds,
+#         target_resolution=gsd,
+#     )
 
-    os.remove(tmp_path)
-    covered_area.append(non_overlap)
+#     os.remove(tmp_path)
+#     covered_area.append(non_overlap)
 
+"""Creating Patches from tiles"""
 # for i in range(4):
-#     print(utils.get_tiff_info(f"{final_dir}/tile_{i}.tif"))
-#     print("")
-# # creating patches
-# for i in range(4):
-#     utils.create_patches_from_tile(final_dir + f"tile_{i}.tif")
+#     utils.create_patches(
+#         final_dir + f"/tile_{i}.tif",
+#         "data/ground_truth/GBDA24_ex2_ref_data.tif",
+#         "data/patches/masks",
+#         "data/patches/images",
+#     )
