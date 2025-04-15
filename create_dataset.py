@@ -103,10 +103,10 @@ covered_area = []
 #     covered_area.append(non_overlap)
 
 """Creating Patches from tiles"""
-# for i in range(4):
-#     utils.create_patches(
-#         final_dir + f"/tile_{i}.tif",
-#         "data/ground_truth/GBDA24_ex2_ref_data.tif",
-#         "data/patches/masks",
-#         "data/patches/images",
-#     )
+for i in range(4):
+    utils.create_patches(
+        final_dir + f"/tile_{i}.tif",
+        "data/ground_truth/GBDA24_ex2_ref_data.tif",
+        "data/test_patches/masks",
+        "data/test_patches/images",
+    )

@@ -260,6 +260,63 @@ def reproject_raster(
                 )
 
 
+# def create_patches(
+#     tile_path,
+#     mask_path,
+#     output_mask_dir,
+#     output_dir,
+#     patch_size=256,
+#     max_nan_ratio=0.15,
+# ):
+#     """
+#     Creates patches from a satellite tile and extracts corresponding patches from a
+#     full-scene ground truth mask based on geospatial alignment.
+#     """
+#     os.makedirs(output_dir, exist_ok=True)
+#     os.makedirs(output_mask_dir, exist_ok=True)
+
+#     with rasterio.open(tile_path) as src_img, rasterio.open(mask_path) as src_mask:
+#         height, width = src_img.height, src_img.width
+#         profile = src_img.profile
+#         nodata_val = src_img.nodata
+
+#         patch_id = 0
+#         for top in tqdm(range(0, height, patch_size)):
+#             for left in range(0, width, patch_size):
+#                 if left + patch_size > width or top + patch_size > height:
+#                     continue
+
+#                 # Define image patch window
+#                 window = Window(left, top, patch_size, patch_size)
+
+#                 # Read image patch
+#                 patch = src_img.read(window=window)
+#                 nan_ratio = np.sum(patch == nodata_val) / patch.size
+#                 if nan_ratio > max_nan_ratio:
+#                     continue
+
+#                 # Convert image patch window to geospatial bounds
+#                 patch_bounds = rasterio.windows.bounds(window, src_img.transform)
+
+#                 # Get matching window in GT mask
+#                 gt_window = from_bounds(*patch_bounds, transform=src_mask.transform)
+
+#                 # Extract corresponding patch from GT mask
+#                 mask_patch = src_mask.read(1, window=gt_window)
+
+#                 # Save
+#                 patch_path = os.path.join(output_dir, f"patch_{patch_id:04d}.npy")
+#                 np.save(patch_path, patch)
+#                 mask_path_out = os.path.join(
+#                     output_mask_dir, f"patch_{patch_id:04d}_mask.npy"
+#                 )
+#                 np.save(mask_path_out, mask_patch)
+
+#                 patch_id += 1
+
+#     return patch_id
+
+
 def create_patches(
     tile_path,
     mask_path,
@@ -267,17 +324,21 @@ def create_patches(
     output_dir,
     patch_size=256,
     max_nan_ratio=0.15,
+    max_cloud_ratio=0.8,
 ):
     """
     Creates patches from a satellite tile and extracts corresponding patches from a
-    full-scene ground truth mask based on geospatial alignment.
+    full-scene ground truth mask, skipping patches with too many clouds or NaNs.
     """
     os.makedirs(output_dir, exist_ok=True)
     os.makedirs(output_mask_dir, exist_ok=True)
 
     with rasterio.open(tile_path) as src_img, rasterio.open(mask_path) as src_mask:
+        cloud_detector = S2PixelCloudDetector(
+            threshold=0.4, average_over=4, dilation_size=2, all_bands=True
+        )
+
         height, width = src_img.height, src_img.width
-        profile = src_img.profile
         nodata_val = src_img.nodata
 
         patch_id = 0
@@ -286,31 +347,46 @@ def create_patches(
                 if left + patch_size > width or top + patch_size > height:
                     continue
 
-                # Define image patch window
                 window = Window(left, top, patch_size, patch_size)
+                patch = src_img.read(window=window)  # shape: (bands, H, W)
 
-                # Read image patch
-                patch = src_img.read(window=window)
+                # Skip if too many NaNs
                 nan_ratio = np.sum(patch == nodata_val) / patch.size
                 if nan_ratio > max_nan_ratio:
                     continue
 
-                # Convert image patch window to geospatial bounds
-                patch_bounds = rasterio.windows.bounds(window, src_img.transform)
+                # Normalize patch (assuming 0–10000 reflectance scale)
+                patch = patch.astype(np.float32) / 10000.0
 
-                # Get matching window in GT mask
-                gt_window = from_bounds(*patch_bounds, transform=src_mask.transform)
+                # Extract bands
+                nir = patch[7]
+                red = patch[3]
+                blue = patch[1]
+                green = patch[2]
 
-                # Extract corresponding patch from GT mask
-                mask_patch = src_mask.read(1, window=gt_window)
+                # NDVI
+                ndvi = (nir - red) / (nir + red + 1e-5)
 
-                # Save
-                patch_path = os.path.join(output_dir, f"patch_{patch_id:04d}.npy")
-                np.save(patch_path, patch)
-                mask_path_out = os.path.join(
-                    output_mask_dir, f"patch_{patch_id:04d}_mask.npy"
-                )
-                np.save(mask_path_out, mask_patch)
+                # Combine NDVI + Reflectance heuristics
+                cloudy_pixels = (ndvi < 0.1) & (blue > 0.2) & (green > 0.2)
+                cloud_ratio = np.sum(cloudy_pixels) / ndvi.size
+
+                if cloud_ratio > max_cloud_ratio:
+                    print(f"Rejected (combined cloud ratio = {cloud_ratio:.2f})")
+
+                    # Get mask window and read mask patch
+                    patch_bounds = rasterio.windows.bounds(window, src_img.transform)
+                    gt_window = from_bounds(*patch_bounds, transform=src_mask.transform)
+                    mask_patch = src_mask.read(1, window=gt_window)
+
+                    # Save
+                    np.save(
+                        os.path.join(output_dir, f"patch_{patch_id:04d}.npy"), patch
+                    )
+                    np.save(
+                        os.path.join(output_mask_dir, f"patch_{patch_id:04d}_mask.npy"),
+                        mask_patch,
+                    )
 
                 patch_id += 1
 
