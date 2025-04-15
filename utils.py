@@ -122,6 +122,30 @@ def pansharpening(src_path, classi_path, output_path):
     - Saves the final cloud-free, pansharpened output to disk
     """
 
+
+def pansharpening(src_path, output_path):
+    """
+    Performs pansharpening and cloud masking on raw Sentinel-2 imagery:
+    Parameters:
+        src_path (str): Path to the TIFF file.
+        output_path (str): output path to save results
+    """
+    band_order = [
+        "B01",
+        "B02",
+        "B03",
+        "B04",
+        "B05",
+        "B06",
+        "B07",
+        "B08",
+        "B8A",
+        "B09",
+        "B10",
+        "B11",
+        "B12",
+    ]
+
     # Find B02 (10m) as reference
     ref_path = next(
         os.path.join(src_path, f)
@@ -134,80 +158,31 @@ def pansharpening(src_path, classi_path, output_path):
         ref_transform = ref.transform
         ref_crs = ref.crs
 
-    # Load and resample cloud masks to 10m
-    with rasterio.open(classi_path) as mask_src:
-        opaque_mask = np.empty((ref_height, ref_width), dtype=np.uint8)
-        cirrus_mask = np.empty((ref_height, ref_width), dtype=np.uint8)
+    bands_array = []
 
-        reproject(
-            source=mask_src.read(1),
-            destination=opaque_mask,
-            src_transform=mask_src.transform,
-            src_crs=mask_src.crs,
-            dst_transform=ref_transform,
-            dst_crs=ref_crs,
-            resampling=Resampling.nearest,
-        )
-        reproject(
-            source=mask_src.read(2),
-            destination=cirrus_mask,
-            src_transform=mask_src.transform,
-            src_crs=mask_src.crs,
-            dst_transform=ref_transform,
-            dst_crs=ref_crs,
-            resampling=Resampling.nearest,
-        )
+    jp2_files = [
+        f for f in os.listdir(src_path) if f.endswith(".jp2") and "TCI" not in f
+    ]
+    identifier = jp2_files[0].split("_B")[0] + "_"
+    for band_suffix in band_order:
+        filename = f"{identifier}{band_suffix}.jp2"
+        if filename in jp2_files:
+            band_path = os.path.join(src_path, filename)
+            with rasterio.open(band_path) as src:
+                original_res = src.res[0]
+                if original_res == 10.0:
+                    data = src.read(1)
 
-    cloud_mask = (opaque_mask == 1) | (cirrus_mask == 1)
-    del opaque_mask, cirrus_mask
-    gc.collect()
+                else:
+                    data = src.read(
+                        out_shape=(1, ref_height, ref_width),
+                        resampling=Resampling.bilinear,
+                    )[0]
+                bands_array.append((data).astype(np.float32))
 
-    band_arrays = []
-    for f in sorted(os.listdir(src_path)):
-        if "TCI.jp2" in f or not f.endswith(".jp2"):
-            continue
+    band_stack = np.stack(bands_array)
 
-        file_path = os.path.join(src_path, f)
-        with rasterio.open(file_path) as src:
-            band_native = src.read(1)
-            native_shape = band_native.shape
-
-            # Build cloud mask at native resolution
-            if src.res[0] != 10:
-                band_mask = np.empty(native_shape, dtype=np.uint8)
-                reproject(
-                    source=cloud_mask.astype(np.uint8),
-                    destination=band_mask,
-                    src_transform=ref_transform,
-                    src_crs=ref_crs,
-                    dst_transform=src.transform,
-                    dst_crs=src.crs,
-                    resampling=Resampling.nearest,
-                )
-                clean_band = np.where(band_mask == 0, band_native, np.nan)
-            else:
-                clean_band = np.where(~cloud_mask, band_native, np.nan)
-
-            # Resample to 10m if needed
-            if src.res[0] != 10:
-                clean_band = rasterio.warp.reproject(
-                    source=clean_band,
-                    destination=np.empty((ref_height, ref_width), dtype=np.float32),
-                    src_transform=src.transform,
-                    src_crs=src.crs,
-                    dst_transform=ref_transform,
-                    dst_crs=ref_crs,
-                    resampling=Resampling.bilinear,
-                )[0]
-
-            band_arrays.append(clean_band.astype(np.float32))
-            del band_native, clean_band
-            gc.collect()
-
-    stack = np.stack(band_arrays)
-    write_multiband_tiff(output_path, stack, ref_transform, ref_crs)
-    del stack, band_arrays, cloud_mask
-    gc.collect()
+    write_multiband_tiff(output_path, band_stack, ref_transform, ref_crs)
 
 
 def reproject_raster(
