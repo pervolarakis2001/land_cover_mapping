@@ -34,8 +34,7 @@ class SatelliteDataset(Dataset):
         image = torch.from_numpy(image).float()
         mask = torch.from_numpy(mask).long()
 
-        # Optional transforms (e.g. normalization, augmentation)
         if self.transform:
-            image, mask = self.transform(image, mask)
+            image = self.transform(image)
 
         return image, mask

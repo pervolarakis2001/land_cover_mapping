@@ -5,3 +5,4 @@ rtree
 torch 
 torchvision
 s2cloudless
+scikit-learn
