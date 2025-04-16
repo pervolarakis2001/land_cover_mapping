@@ -3,7 +3,8 @@ from rasterio.transform import from_origin
 import numpy as np
 from rasterio.warp import calculate_default_transform, reproject
 from rasterio.enums import Resampling
-import os, gc
+import os
+import gc
 from rasterio.windows import Window, from_bounds
 from shapely.geometry import box
 import matplotlib.pyplot as plt
@@ -324,7 +325,7 @@ def create_patches(
     output_dir,
     patch_size=256,
     max_nan_ratio=0.15,
-    max_cloud_ratio=0.8,
+    max_cloud_ratio=0.0,
 ):
     """
     Creates patches from a satellite tile and extracts corresponding patches from a
@@ -363,13 +364,27 @@ def create_patches(
                 red = patch[3]
                 blue = patch[1]
                 green = patch[2]
+                swir = patch[11]
 
                 # NDVI
                 ndvi = (nir - red) / (nir + red + 1e-5)
+                valid_ndvi = ndvi > 0.1
 
-                # Combine NDVI + Reflectance heuristics
-                cloudy_pixels = (ndvi < 0.1) & (blue > 0.2) & (green > 0.2)
-                cloud_ratio = np.sum(cloudy_pixels) / ndvi.size
+                # # Combine NDVI + Reflectance heuristics
+                # cloudy_pixels = (ndvi < 0.1) & (blue > 0.2) & (green > 0.2)
+                # cloud_ratio = np.sum(cloudy_pixels) / ndvi.size
+
+                cloud_candidates = (
+                    valid_ndvi
+                    & (blue > 0.15)
+                    & (green > 0.15)
+                    & (nir > 0.3)
+                    & (swir < 0.35)
+                )  # σύννεφα είναι συχνά χαμηλά στο SWIR
+
+                cloud_ratio = np.sum(cloud_candidates) / ndvi.size
+                if 0.01 < cloud_ratio < max_cloud_ratio:
+                    print(f"Patch with light clouds (cloud ratio = {cloud_ratio:.2f})")
 
                 if cloud_ratio > max_cloud_ratio:
                     print(f"Rejected (combined cloud ratio = {cloud_ratio:.2f})")
@@ -428,3 +443,111 @@ def visualize_tif(tif_path, output_plot_path="plot.png", bands=(4, 3, 2)):
     plt.savefig(output_plot_path, dpi=300, bbox_inches="tight")
     plt.close()
     print(f"Saved plot to {output_plot_path}")
+
+
+def create_patches_cloud(
+    tile_path,
+    scl_path,
+    mask_path,
+    output_mask_dir,
+    output_dir,
+    patch_size=256,
+    max_nan_ratio=0.15,
+    max_cloud_ratio=0.0,
+):
+    """
+    Creates patches from a satellite tile and extracts corresponding patches from a
+    full-scene ground truth mask, skipping patches with too many clouds or NaNs,
+    using the Sentinel-2 Scene Classification Layer (SCL) for cloud detection.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    os.makedirs(output_mask_dir, exist_ok=True)
+
+    with rasterio.open(tile_path) as src_img, rasterio.open(
+        mask_path
+    ) as src_mask, rasterio.open(scl_path) as src_scl:
+
+        # Resample SCL to match tile resolution (10m)
+        scl_data = src_scl.read(
+            1, out_shape=(src_img.height, src_img.width), resampling=Resampling.nearest
+        )
+
+        height, width = src_img.height, src_img.width
+        nodata_val = src_img.nodata
+
+        patch_id = 0
+        for top in tqdm(range(0, height, patch_size)):
+            for left in range(0, width, patch_size):
+                if left + patch_size > width or top + patch_size > height:
+                    continue
+
+                window = Window(left, top, patch_size, patch_size)
+                patch = src_img.read(window=window)  # shape: (bands, H, W)
+
+                # Skip if too many NaNs
+                nan_ratio = np.sum(patch == nodata_val) / patch.size
+                if nan_ratio > max_nan_ratio:
+                    continue
+
+                # Normalize patch (assuming 0–10000 reflectance scale)
+                patch = patch.astype(np.float32) / 10000.0
+
+                # Get corresponding SCL window
+                scl_patch = scl_data[top : top + patch_size, left : left + patch_size]
+
+                # SCL cloud class values: 3 (shadow), 7, 8, 9 (cloud), 10 (cirrus)
+                cloud_mask = np.isin(scl_patch, [3, 7, 8, 9, 10])
+                cloud_ratio = np.sum(cloud_mask) / cloud_mask.size
+
+                if cloud_ratio > max_cloud_ratio:
+                    print(
+                        f"Rejected patch at ({top},{left}) due to clouds (cloud ratio = {cloud_ratio:.2f})"
+                    )
+                    continue
+
+                # Get mask window and read mask patch
+                patch_bounds = rasterio.windows.bounds(window, src_img.transform)
+                gt_window = from_bounds(*patch_bounds, transform=src_mask.transform)
+                mask_patch = src_mask.read(1, window=gt_window)
+
+                # Save
+                np.save(os.path.join(output_dir, f"patch_{patch_id:04d}.npy"), patch)
+                np.save(
+                    os.path.join(output_mask_dir, f"patch_{patch_id:04d}_mask.npy"),
+                    mask_patch,
+                )
+
+                patch_id += 1
+
+    return patch_id
+
+
+def visualize_sample(x, y=None, bands=(3, 2, 1), title="Augmented Sample"):
+    """
+    Visualize a multi-band image using selected RGB bands.
+
+    Args:
+        x (Tensor): Image tensor of shape (C, H, W)
+        y (Tensor, optional): Mask tensor of shape (H, W)
+        bands (tuple): Indices for RGB bands (default is Sentinel-2 B4, B3, B2)
+        title (str): Title for the plot
+    """
+    # Select RGB bands and bring to (H, W, C)
+    rgb = x[bands, :, :].clone().detach().cpu()
+    rgb = rgb.permute(1, 2, 0)  # (H, W, C)
+
+    # Normalize for display
+    rgb = (rgb - rgb.min()) / (rgb.max() - rgb.min())
+
+    plt.figure(figsize=(6, 6))
+    plt.imshow(rgb)
+    plt.title(title)
+    plt.axis("off")
+
+    if y is not None:
+        plt.figure(figsize=(6, 6))
+        plt.imshow(y.cpu(), cmap="tab20")  # or 'nipy_spectral'
+        plt.title("Segmentation Mask")
+        plt.axis("off")
+
+    plt.show()
