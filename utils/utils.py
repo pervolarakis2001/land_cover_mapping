@@ -3,7 +3,7 @@ from rasterio.transform import from_origin
 import numpy as np
 from rasterio.warp import calculate_default_transform, reproject
 from rasterio.enums import Resampling
-import os
+import os, re
 import gc
 from rasterio.windows import Window, from_bounds
 from shapely.geometry import box
@@ -271,7 +271,12 @@ def create_patches(
         profile = src_img.profile
         nodata_val = src_img.nodata
 
-        patch_id = 0
+        existing_ids = []
+        for f in os.listdir(output_dir):
+            match = re.match(r"patch_(\d+)\.npy", f)
+            if match:
+                existing_ids.append(int(match.group(1)))
+        patch_id = max(existing_ids) + 1 if existing_ids else 0
         for top in tqdm(range(0, height, patch_size)):
             for left in range(0, width, patch_size):
                 if left + patch_size > width or top + patch_size > height:

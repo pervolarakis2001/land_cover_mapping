@@ -1,5 +1,13 @@
-/data
 venv/
 __pycache__/
 *.pyc
 output/*
+data/ground_truth/*.tif
+data/patches/images/*
+data/patches/masks/*
+data/processed/final_tiles/*
+data/processed/pansharpened_tiles/*
+data/ground_truth/*
+data/raw/*
+data/cloud_mask.tif
+data/cloud_mask.tif.aux.xml
