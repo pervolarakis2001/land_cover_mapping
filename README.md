@@ -1,5 +1,6 @@
 
-### 🛠️ Setup Instructions
+# Training Unet on L1C Sentinel 2 products for Image Segmentation
+### Setup Instructions
 
 1. **Clone the repository:**
 
@@ -22,11 +23,4 @@
     conda env create -f environment.yml
     conda activate conda_env
     ```
-
-4. **Launch Jupyter Notebook:**
-
-    ```bash
-    jupyter notebook
-    ```
-
 ---

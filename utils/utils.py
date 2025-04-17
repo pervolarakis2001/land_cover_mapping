@@ -276,6 +276,12 @@ def create_patches(
             match = re.match(r"patch_(\d+)\.npy", f)
             if match:
                 existing_ids.append(int(match.group(1)))
+
+        # Check mask patch files
+        for f in os.listdir(output_mask_dir):
+            match = re.match(r"patch_(\d+)_mask\.npy", f)
+            if match:
+                existing_ids.append(int(match.group(1)))
         patch_id = max(existing_ids) + 1 if existing_ids else 0
         for top in tqdm(range(0, height, patch_size)):
             for left in range(0, width, patch_size):
@@ -377,32 +383,57 @@ def visualize_tif(tif_path, output_plot_path="plot.png", bands=(4, 3, 2)):
     print(f"Saved plot to {output_plot_path}")
 
 
-def visualize_sample(x, y=None, bands=(3, 2, 1), title="Augmented Sample"):
+import matplotlib.pyplot as plt
+import torch
+
+
+def visualize_samples(
+    x_list, y_list=None, bands=(4, 3, 2), max_samples=5, title="Samples"
+):
     """
-    Visualize a multi-band image using selected RGB bands.
+    Visualize multiple multi-band samples side-by-side.
 
     Args:
-        x (Tensor): Image tensor of shape (C, H, W)
-        y (Tensor, optional): Mask tensor of shape (H, W)
-        bands (tuple): Indices for RGB bands (default is Sentinel-2 B4, B3, B2)
-        title (str): Title for the plot
+        x_list (list of Tensor): List of image tensors of shape (C, H, W)
+        y_list (list of Tensor, optional): List of mask tensors of shape (H, W)
+        bands (tuple): Band indices for RGB visualization
+        max_samples (int): Number of samples to visualize
+        title (str): Plot title
     """
-    # Select RGB bands and bring to (H, W, C)
-    rgb = x[bands, :, :].clone().detach().cpu()
-    rgb = rgb.permute(1, 2, 0)  # (H, W, C)
+    num_samples = min(len(x_list), max_samples)
+    show_masks = y_list is not None
 
-    # Normalize for display
-    rgb = (rgb - rgb.min()) / (rgb.max() - rgb.min())
+    fig, axes = plt.subplots(
+        2 if show_masks else 1,
+        num_samples,
+        figsize=(4 * num_samples, 4 * (2 if show_masks else 1)),
+    )
+    if num_samples == 1:
+        axes = [axes]  # make iterable
 
-    plt.figure(figsize=(6, 6))
-    plt.imshow(rgb)
-    plt.title(title)
-    plt.axis("off")
+    fig.suptitle(title, fontsize=16)
 
-    if y is not None:
-        plt.figure(figsize=(6, 6))
-        plt.imshow(y.cpu(), cmap="tab20")  # or 'nipy_spectral'
-        plt.title("Segmentation Mask")
-        plt.axis("off")
+    for i in range(num_samples):
+        # Prepare RGB image
+        rgb = x_list[i][bands, :, :].clone().detach().cpu()
+        rgb = rgb.permute(1, 2, 0)  # (H, W, C)
+        rgb = (rgb - rgb.min()) / (rgb.max() - rgb.min())
 
+        if num_samples == 1:
+            ax_img = axes[0] if show_masks else axes
+        else:
+            ax_img = axes[0][i] if show_masks else axes[i]
+
+        ax_img.imshow(rgb)
+        ax_img.set_title(f"Sample {i}")
+        ax_img.axis("off")
+
+        # Show mask if available
+        if show_masks:
+            ax_mask = axes[1][i] if num_samples > 1 else axes[1]
+            ax_mask.imshow(y_list[i].cpu(), cmap="tab20")
+            ax_mask.set_title(f"Mask {i}")
+            ax_mask.axis("off")
+
+    plt.tight_layout()
     plt.show()
