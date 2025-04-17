@@ -60,6 +60,7 @@ def write_multiband_tiff(output_path, data, transform, crs):
         dtype=data.dtype,
         crs=crs,
         transform=transform,
+        nodata=-9999,
     ) as dst:
         # Write all bands
         dst.write(data)
@@ -111,17 +112,6 @@ def get_tiff_info(filepath):
             "nodata": src.nodata,
         }
         return info
-
-
-def pansharpening(src_path, classi_path, output_path):
-    """
-    Performs pansharpening and cloud masking on raw Sentinel-2 imagery:
-    - Reads spectral bands and applies cloud masks using MSK_CLASSI_B00.jp2
-    - Masks out cloud-affected pixels at each band's native resolution
-    - Resamples only the valid (cloud-free) pixels to a uniform 10m resolution
-    - Stacks the cleaned bands into a multiband GeoTIFF
-    - Saves the final cloud-free, pansharpened output to disk
-    """
 
 
 def pansharpening(src_path, output_path):
@@ -261,63 +251,6 @@ def reproject_raster(
                 )
 
 
-# def create_patches(
-#     tile_path,
-#     mask_path,
-#     output_mask_dir,
-#     output_dir,
-#     patch_size=256,
-#     max_nan_ratio=0.15,
-# ):
-#     """
-#     Creates patches from a satellite tile and extracts corresponding patches from a
-#     full-scene ground truth mask based on geospatial alignment.
-#     """
-#     os.makedirs(output_dir, exist_ok=True)
-#     os.makedirs(output_mask_dir, exist_ok=True)
-
-#     with rasterio.open(tile_path) as src_img, rasterio.open(mask_path) as src_mask:
-#         height, width = src_img.height, src_img.width
-#         profile = src_img.profile
-#         nodata_val = src_img.nodata
-
-#         patch_id = 0
-#         for top in tqdm(range(0, height, patch_size)):
-#             for left in range(0, width, patch_size):
-#                 if left + patch_size > width or top + patch_size > height:
-#                     continue
-
-#                 # Define image patch window
-#                 window = Window(left, top, patch_size, patch_size)
-
-#                 # Read image patch
-#                 patch = src_img.read(window=window)
-#                 nan_ratio = np.sum(patch == nodata_val) / patch.size
-#                 if nan_ratio > max_nan_ratio:
-#                     continue
-
-#                 # Convert image patch window to geospatial bounds
-#                 patch_bounds = rasterio.windows.bounds(window, src_img.transform)
-
-#                 # Get matching window in GT mask
-#                 gt_window = from_bounds(*patch_bounds, transform=src_mask.transform)
-
-#                 # Extract corresponding patch from GT mask
-#                 mask_patch = src_mask.read(1, window=gt_window)
-
-#                 # Save
-#                 patch_path = os.path.join(output_dir, f"patch_{patch_id:04d}.npy")
-#                 np.save(patch_path, patch)
-#                 mask_path_out = os.path.join(
-#                     output_mask_dir, f"patch_{patch_id:04d}_mask.npy"
-#                 )
-#                 np.save(mask_path_out, mask_patch)
-
-#                 patch_id += 1
-
-#     return patch_id
-
-
 def create_patches(
     tile_path,
     mask_path,
@@ -325,21 +258,17 @@ def create_patches(
     output_dir,
     patch_size=256,
     max_nan_ratio=0.15,
-    max_cloud_ratio=0.0,
 ):
     """
     Creates patches from a satellite tile and extracts corresponding patches from a
-    full-scene ground truth mask, skipping patches with too many clouds or NaNs.
+    full-scene ground truth mask based on geospatial alignment.
     """
     os.makedirs(output_dir, exist_ok=True)
     os.makedirs(output_mask_dir, exist_ok=True)
 
     with rasterio.open(tile_path) as src_img, rasterio.open(mask_path) as src_mask:
-        cloud_detector = S2PixelCloudDetector(
-            threshold=0.4, average_over=4, dilation_size=2, all_bands=True
-        )
-
         height, width = src_img.height, src_img.width
+        profile = src_img.profile
         nodata_val = src_img.nodata
 
         patch_id = 0
@@ -348,64 +277,62 @@ def create_patches(
                 if left + patch_size > width or top + patch_size > height:
                     continue
 
+                # Define image patch window
                 window = Window(left, top, patch_size, patch_size)
-                patch = src_img.read(window=window)  # shape: (bands, H, W)
 
-                # Skip if too many NaNs
+                # Read image patch
+                patch = src_img.read(window=window)
                 nan_ratio = np.sum(patch == nodata_val) / patch.size
                 if nan_ratio > max_nan_ratio:
                     continue
 
-                # Normalize patch (assuming 0–10000 reflectance scale)
-                patch = patch.astype(np.float32) / 10000.0
+                # Convert image patch window to geospatial bounds
+                patch_bounds = rasterio.windows.bounds(window, src_img.transform)
 
-                # Extract bands
-                nir = patch[7]
-                red = patch[3]
-                blue = patch[1]
-                green = patch[2]
-                swir = patch[11]
+                # Get matching window in GT mask
+                gt_window = from_bounds(*patch_bounds, transform=src_mask.transform)
 
-                # NDVI
-                ndvi = (nir - red) / (nir + red + 1e-5)
-                valid_ndvi = ndvi > 0.1
+                # Extract corresponding patch from GT mask
+                mask_patch = src_mask.read(1, window=gt_window)
 
-                # # Combine NDVI + Reflectance heuristics
-                # cloudy_pixels = (ndvi < 0.1) & (blue > 0.2) & (green > 0.2)
-                # cloud_ratio = np.sum(cloudy_pixels) / ndvi.size
-
-                cloud_candidates = (
-                    valid_ndvi
-                    & (blue > 0.15)
-                    & (green > 0.15)
-                    & (nir > 0.3)
-                    & (swir < 0.35)
-                )  # σύννεφα είναι συχνά χαμηλά στο SWIR
-
-                cloud_ratio = np.sum(cloud_candidates) / ndvi.size
-                if 0.01 < cloud_ratio < max_cloud_ratio:
-                    print(f"Patch with light clouds (cloud ratio = {cloud_ratio:.2f})")
-
-                if cloud_ratio > max_cloud_ratio:
-                    print(f"Rejected (combined cloud ratio = {cloud_ratio:.2f})")
-
-                    # Get mask window and read mask patch
-                    patch_bounds = rasterio.windows.bounds(window, src_img.transform)
-                    gt_window = from_bounds(*patch_bounds, transform=src_mask.transform)
-                    mask_patch = src_mask.read(1, window=gt_window)
-
-                    # Save
-                    np.save(
-                        os.path.join(output_dir, f"patch_{patch_id:04d}.npy"), patch
-                    )
-                    np.save(
-                        os.path.join(output_mask_dir, f"patch_{patch_id:04d}_mask.npy"),
-                        mask_patch,
-                    )
+                # Save
+                patch_path = os.path.join(output_dir, f"patch_{patch_id:04d}.npy")
+                np.save(patch_path, patch)
+                mask_path_out = os.path.join(
+                    output_mask_dir, f"patch_{patch_id:04d}_mask.npy"
+                )
+                np.save(mask_path_out, mask_patch)
 
                 patch_id += 1
 
     return patch_id
+
+
+def generate_cloud_mask(scl_path, output_path, cloud_values=[3, 8, 9, 10]):
+    """
+    Generates a binary cloud mask from a reprojected SCL raster from L2A product.
+
+    Parameters:
+        scl_path (str): Path to the aligned SCL raster (GeoTIFF).
+        output_path (str): Path to save the output cloud mask.
+        cloud_values (list): SCL values considered as clouds.
+
+    Returns:
+        mask (np.ndarray): Binary mask array (1 for cloud/cirrus, 0 for clear).
+    """
+    with rasterio.open(scl_path) as src:
+        scl = src.read(1)
+        profile = src.profile
+
+    # Generate binary mask
+    mask = np.isin(scl, cloud_values).astype(np.uint8)
+
+    # Save the mask
+    profile.update(dtype=rasterio.uint8, count=1)
+    with rasterio.open(output_path, "w", **profile) as dst:
+        dst.write(mask, 1)
+
+    return mask
 
 
 def visualize_tif(tif_path, output_plot_path="plot.png", bands=(4, 3, 2)):
@@ -443,83 +370,6 @@ def visualize_tif(tif_path, output_plot_path="plot.png", bands=(4, 3, 2)):
     plt.savefig(output_plot_path, dpi=300, bbox_inches="tight")
     plt.close()
     print(f"Saved plot to {output_plot_path}")
-
-
-def create_patches_cloud(
-    tile_path,
-    scl_path,
-    mask_path,
-    output_mask_dir,
-    output_dir,
-    patch_size=256,
-    max_nan_ratio=0.15,
-    max_cloud_ratio=0.0,
-):
-    """
-    Creates patches from a satellite tile and extracts corresponding patches from a
-    full-scene ground truth mask, skipping patches with too many clouds or NaNs,
-    using the Sentinel-2 Scene Classification Layer (SCL) for cloud detection.
-    """
-    os.makedirs(output_dir, exist_ok=True)
-    os.makedirs(output_mask_dir, exist_ok=True)
-
-    with rasterio.open(tile_path) as src_img, rasterio.open(
-        mask_path
-    ) as src_mask, rasterio.open(scl_path) as src_scl:
-
-        # Resample SCL to match tile resolution (10m)
-        scl_data = src_scl.read(
-            1, out_shape=(src_img.height, src_img.width), resampling=Resampling.nearest
-        )
-
-        height, width = src_img.height, src_img.width
-        nodata_val = src_img.nodata
-
-        patch_id = 0
-        for top in tqdm(range(0, height, patch_size)):
-            for left in range(0, width, patch_size):
-                if left + patch_size > width or top + patch_size > height:
-                    continue
-
-                window = Window(left, top, patch_size, patch_size)
-                patch = src_img.read(window=window)  # shape: (bands, H, W)
-
-                # Skip if too many NaNs
-                nan_ratio = np.sum(patch == nodata_val) / patch.size
-                if nan_ratio > max_nan_ratio:
-                    continue
-
-                # Normalize patch (assuming 0–10000 reflectance scale)
-                patch = patch.astype(np.float32) / 10000.0
-
-                # Get corresponding SCL window
-                scl_patch = scl_data[top : top + patch_size, left : left + patch_size]
-
-                # SCL cloud class values: 3 (shadow), 7, 8, 9 (cloud), 10 (cirrus)
-                cloud_mask = np.isin(scl_patch, [3, 7, 8, 9, 10])
-                cloud_ratio = np.sum(cloud_mask) / cloud_mask.size
-
-                if cloud_ratio > max_cloud_ratio:
-                    print(
-                        f"Rejected patch at ({top},{left}) due to clouds (cloud ratio = {cloud_ratio:.2f})"
-                    )
-                    continue
-
-                # Get mask window and read mask patch
-                patch_bounds = rasterio.windows.bounds(window, src_img.transform)
-                gt_window = from_bounds(*patch_bounds, transform=src_mask.transform)
-                mask_patch = src_mask.read(1, window=gt_window)
-
-                # Save
-                np.save(os.path.join(output_dir, f"patch_{patch_id:04d}.npy"), patch)
-                np.save(
-                    os.path.join(output_mask_dir, f"patch_{patch_id:04d}_mask.npy"),
-                    mask_patch,
-                )
-
-                patch_id += 1
-
-    return patch_id
 
 
 def visualize_sample(x, y=None, bands=(3, 2, 1), title="Augmented Sample"):
