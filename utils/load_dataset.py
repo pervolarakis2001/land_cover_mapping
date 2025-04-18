@@ -30,14 +30,10 @@ class SatelliteDataset(Dataset):
 
 
 class Normalize13Band:
-    def __init__(self, mean, std):
-        self.mean = torch.tensor(mean).view(-1, 1, 1)
-        self.std = torch.tensor(std).view(-1, 1, 1)
-
     def __call__(self, x):
-        x = x / 10000.0  # Scale raw Sentinel-2 values
-        x = (x - self.mean) / (self.std + 1e-6)
-        return x
+        return (
+            x / 10000.0
+        )  # normalization the same as the base pretrained model (ResNet18_Weights.SENTINEL2_ALL_MOCO)
 
 
 class AddGaussianNoise:
