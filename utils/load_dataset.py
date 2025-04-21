@@ -10,6 +10,8 @@ class SatelliteDataset(Dataset):
         self.image_paths = image_paths
         self.mask_paths = mask_paths
         self.transform = transform
+        # one-hot encoding
+        self.label_mapping = {10: 0, 20: 1, 30: 2, 40: 3, 50: 4, 60: 5, 80: 6, 90: 7}
 
     def __len__(self):
         return len(self.image_paths)
@@ -24,6 +26,8 @@ class SatelliteDataset(Dataset):
         else:
             image = torch.from_numpy(image)
 
+        for k, v in self.label_mapping.items():
+            mask[mask == k] = v
         mask = torch.from_numpy(mask)
 
         return image, mask

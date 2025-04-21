@@ -8,3 +8,4 @@ s2cloudless
 scikit-learn
 torchgeo
 torchsummary
+torchmetrics
