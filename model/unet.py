@@ -56,7 +56,7 @@ class UNet(nn.Module):
     def __init__(self, num_classes, channels=(13, 64, 128, 256, 512)):
         super().__init__()
         self.num_classes = num_classes
-        self.resnet = resnet18(ResNet18_Weights.SENTINEL2_ALL_MOCO, pretrained=True)
+        self.resnet = resnet18(ResNet18_Weights.SENTINEL2_ALL_MOCO)
         # encloder blocks
         self.encoder0 = nn.Sequential(
             self.resnet.conv1,
@@ -68,14 +68,18 @@ class UNet(nn.Module):
         self.encoder2 = self.resnet.layer2
         self.encoder3 = self.resnet.layer3
         self.encoder4 = self.resnet.layer4
-        del self.resnet
 
         self.bottleneck = DoubleConv(channels[4], channels[4], channels[4])
 
         self.decoder_1 = DecoderBlock(channels[4], channels[4], channels[3])
         self.decoder_2 = DecoderBlock(channels[3], channels[3], channels[2])
         self.decoder_3 = DecoderBlock(channels[2], channels[2], channels[1])
-        self.decoder_4 = DecoderBlock(channels[1], channels[1], channels[1])
+        self.decoder_4 = DecoderBlock(
+            channels[1], channels[1], channels[1], upsampling=True
+        )
+        self.decoder_5 = DecoderBlock(
+            channels[1], channels[1], channels[1], upsampling=True
+        )
 
         # final layer
         self.final = nn.Sequential(
@@ -96,11 +100,7 @@ class UNet(nn.Module):
         up2 = self.decoder_2(up1, x4)
         up3 = self.decoder_3(up2, x3)
         up4 = self.decoder_4(up3, x2)
-
+        up5 = self.decoder_5(up4, x1)
         # Final output
-        outpt_mask = self.final(up4)
-        outpt_mask = F.interpolate(
-            outpt_mask, size=(256, 256), mode="bilinear", align_corners=False
-        )
-
+        outpt_mask = self.final(up5)
         return outpt_mask

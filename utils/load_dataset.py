@@ -3,6 +3,8 @@ import torch
 from torch.utils.data import Dataset
 import numpy as np
 import random
+import torchvision.transforms.functional as TF
+import math
 
 
 class SatelliteDataset(Dataset):
@@ -48,12 +50,30 @@ class AddGaussianNoise:
         return x + torch.randn_like(x) * self.std
 
 
+class RandomRotation:
+    def __call__(self, x, y):
+        angle = random.choice([0, 90, 180, 270])
+        x = TF.rotate(x, angle)
+        y = TF.rotate(y.unsqueeze(0), angle).squeeze(0)
+        return x, y
+
+
 class RandomHorizontalFlip:
     def __call__(self, x, y):
         if random.random() < 0.5:
             x = torch.flip(x, dims=[2])
             y = torch.flip(y, dims=[1])
         return x, y
+
+
+class RandomGaussianBlur:
+    def __init__(self, kernel_size=3):
+        self.kernel_size = kernel_size
+
+    def __call__(self, x):
+        if random.random() < 0.5:
+            return TF.gaussian_blur(x, kernel_size=self.kernel_size)
+        return x
 
 
 class Compose:
@@ -64,7 +84,13 @@ class Compose:
     def __call__(self, x, y=None):
         if self.with_mask:
             for t in self.transforms:
-                if isinstance(t, RandomHorizontalFlip):
+                if isinstance(
+                    t,
+                    (
+                        RandomHorizontalFlip,
+                        RandomRotation,
+                    ),
+                ):
                     x, y = t(x, y)
                 else:
                     x = t(x)

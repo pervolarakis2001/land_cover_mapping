@@ -1,7 +1,10 @@
 import torch
 from tqdm import tqdm
 from torchmetrics.segmentation import DiceScore
+from torchmetrics.segmentation import GeneralizedDiceScore
 import torch.nn.functional as F
+import numpy as np
+from sklearn.metrics import classification_report
 
 
 class EarlyStopping:
@@ -176,6 +179,9 @@ def evaluate_model(model, test_loader, criterion, num_classes=8):
     dice_score = DiceScore(
         num_classes=num_classes, average="weighted", input_format="index"
     ).to(device)
+    iou_score = GeneralizedDiceScore(num_classes=num_classes, input_format="index").to(
+        device
+    )
 
     with torch.no_grad():
         for inputs, labels in tqdm(test_loader, desc="Evaluating"):
@@ -190,17 +196,20 @@ def evaluate_model(model, test_loader, criterion, num_classes=8):
 
             # Accumulate
             dice_score.update(preds, labels)
+            iou_score.update(preds, labels)
             running_loss += loss.item() * inputs.size(0)
             total_acc += acc.item() * inputs.size(0)
 
     avg_loss = running_loss / len(test_loader.dataset)
     avg_dice = dice_score.compute().item()
+    avg_iou = iou_score.compute().item()
     avg_acc = total_acc / len(test_loader.dataset)
     dice_score.reset()
+    iou_score.reset()
 
     print(f"\n Evaluation Results:")
     print(
-        f"Loss: {avg_loss:.4f} | Pixel Accuracy: {avg_acc * 100:.2f}% | Dice Score: {avg_dice:.4f}"
+        f"Loss: {avg_loss:.4f} | Pixel Accuracy: {avg_acc * 100:.2f}% | Dice Score: {avg_dice:.4f} | Mean IoUScore: {avg_iou:.4f}"
     )
 
     return avg_loss, avg_acc, avg_dice
@@ -252,3 +261,47 @@ def plot_history(train_losses, val_losses, train_accs, val_accs, train_dice, val
 
     plt.tight_layout()
     plt.show()
+
+
+def segmentation_report(model, loader, num_classes=8):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model.eval()
+    # Accumulate pixel‑level predictions and truths
+    all_preds = []
+    all_trues = []
+    with torch.no_grad():
+        for imgs, masks in loader:
+            imgs = imgs.to(device)
+            masks = masks.to(device)
+            logits = model(imgs)  # [B, C, H, W]
+            preds = torch.argmax(logits, dim=1)  # [B, H, W]
+            all_preds.append(preds.cpu().numpy().ravel())
+            all_trues.append(masks.cpu().numpy().ravel())
+    y_pred = np.concatenate(all_preds)
+    y_true = np.concatenate(all_trues)
+
+    # 1) Standard classification report
+    cls_report = classification_report(
+        y_true,
+        y_pred,
+        labels=list(range(num_classes)),
+        target_names=[f"Class {c}" for c in range(num_classes)],
+        digits=4,
+        zero_division=0,
+    )
+
+    dice_scores = {}
+    for c in range(num_classes):
+        pred_c = (y_pred == c).astype(np.uint8)
+        true_c = (y_true == c).astype(np.uint8)
+        tp = np.logical_and(pred_c, true_c).sum()
+        fp = np.logical_and(pred_c, 1 - true_c).sum()
+        fn = np.logical_and(1 - pred_c, true_c).sum()
+        # Dice = 2 TP / (2 TP + FP + FN)
+        dice = 2 * tp / (2 * tp + fp + fn + 1e-6)
+        dice_scores[f"Class {c}"] = dice
+    print("=== Classification Report ===")
+    print(cls_report)
+    print("=== Dice per Class ===")
+    for cls, score in dice_scores.items():
+        print(f"{cls}: {score:.4f}")
