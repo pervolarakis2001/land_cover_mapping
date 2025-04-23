@@ -1,7 +1,7 @@
 import torch
 from tqdm import tqdm
 from torchmetrics.segmentation import DiceScore
-from torchmetrics.segmentation import GeneralizedDiceScore
+from torchmetrics.segmentation import MeanIoU
 import torch.nn.functional as F
 import numpy as np
 from sklearn.metrics import classification_report
@@ -179,9 +179,7 @@ def evaluate_model(model, test_loader, criterion, num_classes=8):
     dice_score = DiceScore(
         num_classes=num_classes, average="weighted", input_format="index"
     ).to(device)
-    iou_score = GeneralizedDiceScore(num_classes=num_classes, input_format="index").to(
-        device
-    )
+    iou_score = MeanIoU(num_classes=num_classes, input_format="index").to(device)
 
     with torch.no_grad():
         for inputs, labels in tqdm(test_loader, desc="Evaluating"):
@@ -190,11 +188,10 @@ def evaluate_model(model, test_loader, criterion, num_classes=8):
             outputs = model(inputs)
             loss = criterion(outputs, labels)
 
-            # Predictions and metrics
+            # Statistics
             preds = torch.argmax(outputs, dim=1)
             acc = pixel_accuracy(preds, labels)
 
-            # Accumulate
             dice_score.update(preds, labels)
             iou_score.update(preds, labels)
             running_loss += loss.item() * inputs.size(0)

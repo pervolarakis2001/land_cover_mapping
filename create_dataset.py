@@ -146,3 +146,26 @@ for i in range(4):
         "data/patches/masks",
         "data/patches/images",
     )
+
+"""Perform pansharpening on pred. image"""
+path_pr="/home/ubuntu/bdrs_exercise_1/data/prediction/S2A_MSIL1C_20210727T092031_N0500_R093_T34SEH_20230131T010144.SAFE/S2A_MSIL1C_20210727T092031_N0500_R093_T34SEH_20230131T010144.SAFE/GRANULE/L1C_T34SEH_A031836_20210727T092343/IMG_DATA"
+utils.pansharpening(path_pr, "/home/ubuntu/bdrs_exercise_1/data/prediction/predict_pan.tif")
+
+
+"""Reproject Pred Image"""
+gt_info = utils.get_tiff_info(
+    "/home/ubuntu/bdrs_exercise_1/data/prediction/GBDA24_ex2_34SEH_ref_data.tif"
+) 
+print(gt_info)
+gt_box = box(*gt_info["bounds"])
+gt_crs = gt_info["crs"]
+gsd = gt_info["gsd"]
+utils.reproject_raster(
+    src_path="/home/ubuntu/bdrs_exercise_1/data/prediction/predict_pan.tif",
+            dst_path="/home/ubuntu/bdrs_exercise_1/data/prediction/rep_predict_pan.tif",
+            dst_crs=gt_crs,
+            target_bounds=gt_box.bounds,
+            target_resolution=gsd
+            )
+
+
