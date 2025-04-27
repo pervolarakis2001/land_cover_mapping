@@ -11,26 +11,26 @@ from rasterio.windows import Window, from_bounds
 import matplotlib as plt
 
 
-# directories
-SATELITE_IMG_1 = "data/raw/S2A_MSIL1C_20210727T092031_N0500_R093_T34SEJ_20230131T010144.SAFE/S2A_MSIL1C_20210727T092031_N0500_R093_T34SEJ_20230131T010144.SAFE/GRANULE/L1C_T34SEJ_A031836_20210727T092343/IMG_DATA"
-SATELITE_IMG_2 = "data/raw/S2A_MSIL1C_20210727T092031_N0500_R093_T34SFJ_20230131T010144.SAFE/S2A_MSIL1C_20210727T092031_N0500_R093_T34SFJ_20230131T010144.SAFE/GRANULE/L1C_T34SFJ_A031836_20210727T092343/IMG_DATA"
-SATELITE_IMG_3 = "data/raw/S2A_MSIL1C_20210727T092031_N0500_R093_T34TEK_20230131T010144.SAFE/S2A_MSIL1C_20210727T092031_N0500_R093_T34TEK_20230131T010144.SAFE/GRANULE/L1C_T34TEK_A031836_20210727T092343/IMG_DATA"
-SATELITE_IMG_4 = "data/raw/S2A_MSIL1C_20210727T092031_N0500_R093_T34TFK_20230131T010144.SAFE/S2A_MSIL1C_20210727T092031_N0500_R093_T34TFK_20230131T010144.SAFE/GRANULE/L1C_T34TFK_A031836_20210727T092343/IMG_DATA"
+# # directories
+# SATELITE_IMG_1 = "data/raw/S2A_MSIL1C_20210727T092031_N0500_R093_T34SEJ_20230131T010144.SAFE/S2A_MSIL1C_20210727T092031_N0500_R093_T34SEJ_20230131T010144.SAFE/GRANULE/L1C_T34SEJ_A031836_20210727T092343/IMG_DATA"
+# SATELITE_IMG_2 = "data/raw/S2A_MSIL1C_20210727T092031_N0500_R093_T34SFJ_20230131T010144.SAFE/S2A_MSIL1C_20210727T092031_N0500_R093_T34SFJ_20230131T010144.SAFE/GRANULE/L1C_T34SFJ_A031836_20210727T092343/IMG_DATA"
+# SATELITE_IMG_3 = "data/raw/S2A_MSIL1C_20210727T092031_N0500_R093_T34TEK_20230131T010144.SAFE/S2A_MSIL1C_20210727T092031_N0500_R093_T34TEK_20230131T010144.SAFE/GRANULE/L1C_T34TEK_A031836_20210727T092343/IMG_DATA"
+# SATELITE_IMG_4 = "data/raw/S2A_MSIL1C_20210727T092031_N0500_R093_T34TFK_20230131T010144.SAFE/S2A_MSIL1C_20210727T092031_N0500_R093_T34TFK_20230131T010144.SAFE/GRANULE/L1C_T34TFK_A031836_20210727T092343/IMG_DATA"
 
-paths = [SATELITE_IMG_1, SATELITE_IMG_2, SATELITE_IMG_3, SATELITE_IMG_4]
+# paths = [SATELITE_IMG_1, SATELITE_IMG_2, SATELITE_IMG_3, SATELITE_IMG_4]
 
-"""Perform pansharpening on raw Sentinel-2 tiles using cloud masks"""
+# """Perform pansharpening on raw Sentinel-2 tiles using cloud masks"""
 
-for i, path in enumerate(paths):
-    utils.pansharpening(
-        path,
-        f"data/processed/pansharpened_tiles/newpansharpened_tile_{i}.tif",
-    )
+# for i, path in enumerate(paths):
+#     utils.pansharpening(
+#         path,
+#         f"data/processed/pansharpened_tiles/newpansharpened_tile_{i}.tif",
+#     )
 
 
 """Reproject pansharpened tiles to match the CRS and extent of the groundtruth image"""
 gt_info = utils.get_tiff_info(
-    "/home/ubuntu/bdrs_ex_1/data/ground_truth/GBDA24_ex2_ref_data.tif"
+    "data/ground_truth/GBDA24_ex2_ref_data.tif"
 )
 gt_box = box(*gt_info["bounds"])
 gt_crs = gt_info["crs"]
@@ -99,25 +99,25 @@ for i, tile_path in enumerate(input_tiles):
 
 # Reprojected SLC mask
 gt_info = utils.get_tiff_info(
-    "/home/ubuntu/bdrs_ex_1/data/processed/final_tiles/tile_2.tif"
+    "data/processed/final_tiles/tile_2.tif"
 )
 gt_crs = gt_info["crs"]
 gt_bounds = gt_info["bounds"]
 gt_box = box(*gt_bounds)
 gsd = gt_info["gsd"]
 
-scl_path = "/home/ubuntu/bdrs_ex_1/data/raw/T34TEK_20210727T092031_SCL_20m.jp2"
+scl_path = "data/raw/T34TEK_20210727T092031_SCL_20m.jp2"
 utils.reproject_raster(
     src_path=scl_path,
-    dst_path="/home/ubuntu/bdrs_ex_1/data/processed/final_tiles/rep_SLC.tif",
+    dst_path="data/processed/final_tiles/rep_SLC.tif",
     dst_crs=gt_crs,
     target_bounds=gt_bounds,
     target_resolution=gsd,
 )
 # generate scl cloud mask as a tif file
 utils.generate_cloud_mask(
-    scl_path="/home/ubuntu/bdrs_ex_1/data/processed/final_tiles/rep_SLC.tif",
-    output_path="/home/ubuntu/bdrs_ex_1/data/cloud_mask.tif",
+    scl_path="data/processed/final_tiles/rep_SLC.tif",
+    output_path="data/cloud_mask.tif",
 )
 
 # apply scl mask to tile with clouds
@@ -145,27 +145,35 @@ for i in range(4):
         "data/ground_truth/GBDA24_ex2_ref_data.tif",
         "data/patches/masks",
         "data/patches/images",
+         step_size=128
     )
 
-"""Perform pansharpening on pred. image"""
-path_pr="/home/ubuntu/bdrs_exercise_1/data/prediction/S2A_MSIL1C_20210727T092031_N0500_R093_T34SEH_20230131T010144.SAFE/S2A_MSIL1C_20210727T092031_N0500_R093_T34SEH_20230131T010144.SAFE/GRANULE/L1C_T34SEH_A031836_20210727T092343/IMG_DATA"
-utils.pansharpening(path_pr, "/home/ubuntu/bdrs_exercise_1/data/prediction/predict_pan.tif")
+# """Perform pansharpening on pred. image"""
+# path_pr="/home/ubuntu/bdrs_exercise_1/data/prediction/S2A_MSIL1C_20210727T092031_N0500_R093_T34SEH_20230131T010144.SAFE/S2A_MSIL1C_20210727T092031_N0500_R093_T34SEH_20230131T010144.SAFE/GRANULE/L1C_T34SEH_A031836_20210727T092343/IMG_DATA"
+# utils.pansharpening(path_pr, "/home/ubuntu/bdrs_exercise_1/data/prediction/predict_pan.tif")
 
 
-"""Reproject Pred Image"""
-gt_info = utils.get_tiff_info(
-    "/home/ubuntu/bdrs_exercise_1/data/prediction/GBDA24_ex2_34SEH_ref_data.tif"
-) 
-print(gt_info)
-gt_box = box(*gt_info["bounds"])
-gt_crs = gt_info["crs"]
-gsd = gt_info["gsd"]
-utils.reproject_raster(
-    src_path="/home/ubuntu/bdrs_exercise_1/data/prediction/predict_pan.tif",
-            dst_path="/home/ubuntu/bdrs_exercise_1/data/prediction/rep_predict_pan.tif",
-            dst_crs=gt_crs,
-            target_bounds=gt_box.bounds,
-            target_resolution=gsd
-            )
+# """Reproject Pred Image"""
+# gt_info = utils.get_tiff_info(
+#     "/home/ubuntu/bdrs_exercise_1/data/prediction/GBDA24_ex2_34SEH_ref_data.tif"
+# )
+# print(gt_info)
+# gt_box = box(*gt_info["bounds"])
+# gt_crs = gt_info["crs"]
+# gsd = gt_info["gsd"]
+# utils.reproject_raster(
+#     src_path="/home/ubuntu/bdrs_exercise_1/data/prediction/predict_pan.tif",
+#             dst_path="/home/ubuntu/bdrs_exercise_1/data/prediction/rep_predict_pan.tif",
+#             dst_crs=gt_crs,
+#             target_bounds=gt_box.bounds,
+#             target_resolution=gsd
+#             )
 
-
+# utils.create_patches(
+#     "data/prediction/rep_predict_pan.tif",
+#     "data/prediction/GBDA24_ex2_34SEH_ref_data.tif",
+#     "data/pred_patches/masks",
+#     "data/pred_patches/images",
+#     predicted=True,
+#     step_size=128
+# )

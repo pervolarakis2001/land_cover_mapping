@@ -167,7 +167,7 @@ def train_model(
     )
 
 
-def evaluate_model(model, test_loader, criterion, num_classes=8):
+def evaluate_model(model, test_loader, criterion=None, num_classes=8):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
     model.eval()
@@ -186,7 +186,9 @@ def evaluate_model(model, test_loader, criterion, num_classes=8):
             inputs, labels = inputs.to(device), labels.to(device)
 
             outputs = model(inputs)
-            loss = criterion(outputs, labels)
+            if criterion:
+                loss = criterion(outputs, labels)
+                running_loss += loss.item() * inputs.size(0)
 
             # Statistics
             preds = torch.argmax(outputs, dim=1)
@@ -194,10 +196,13 @@ def evaluate_model(model, test_loader, criterion, num_classes=8):
 
             dice_score.update(preds, labels)
             iou_score.update(preds, labels)
-            running_loss += loss.item() * inputs.size(0)
             total_acc += acc.item() * inputs.size(0)
-
-    avg_loss = running_loss / len(test_loader.dataset)
+    if criterion:
+        avg_loss = running_loss / len(test_loader.dataset)
+        loss_str = f"Loss: {avg_loss:.4f}"
+    else:
+        avg_loss = None
+        loss_str = ""
     avg_dice = dice_score.compute().item()
     avg_iou = iou_score.compute().item()
     avg_acc = total_acc / len(test_loader.dataset)
@@ -206,7 +211,7 @@ def evaluate_model(model, test_loader, criterion, num_classes=8):
 
     print(f"\n Evaluation Results:")
     print(
-        f"Loss: {avg_loss:.4f} | Pixel Accuracy: {avg_acc * 100:.2f}% | Dice Score: {avg_dice:.4f} | Mean IoUScore: {avg_iou:.4f}"
+        f" { loss_str} | Pixel Accuracy: {avg_acc * 100:.2f}% | Dice Score: {avg_dice:.4f} | Mean IoUScore: {avg_iou:.4f}"
     )
 
     return avg_loss, avg_acc, avg_dice
@@ -216,17 +221,6 @@ import matplotlib.pyplot as plt
 
 
 def plot_history(train_losses, val_losses, train_accs, val_accs, train_dice, val_dice):
-    """
-    Plot training & validation loss, accuracy, and Dice score over epochs.
-
-    Args:
-        train_losses (list): Training loss per epoch
-        val_losses (list): Validation loss per epoch
-        train_accs (list): Training pixel accuracy per epoch
-        val_accs (list): Validation pixel accuracy per epoch
-        train_dice (list): Training Dice score per epoch
-        val_dice (list): Validation Dice score per epoch
-    """
     plt.figure(figsize=(18, 5))
 
     # Plot Loss
@@ -263,7 +257,6 @@ def plot_history(train_losses, val_losses, train_accs, val_accs, train_dice, val
 def segmentation_report(model, loader, num_classes=8):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.eval()
-    # Accumulate pixel‑level predictions and truths
     all_preds = []
     all_trues = []
     with torch.no_grad():
@@ -294,7 +287,7 @@ def segmentation_report(model, loader, num_classes=8):
         tp = np.logical_and(pred_c, true_c).sum()
         fp = np.logical_and(pred_c, 1 - true_c).sum()
         fn = np.logical_and(1 - pred_c, true_c).sum()
-        # Dice = 2 TP / (2 TP + FP + FN)
+
         dice = 2 * tp / (2 * tp + fp + fn + 1e-6)
         dice_scores[f"Class {c}"] = dice
     print("=== Classification Report ===")

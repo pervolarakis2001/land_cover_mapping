@@ -257,18 +257,33 @@ def create_patches(
     output_mask_dir,
     output_dir,
     patch_size=256,
+    step_size=None,
     max_nan_ratio=0.15,
+    predicted=False,
 ):
     """
-    Creates patches from a satellite tile and extracts corresponding patches from a
-    full-scene ground truth mask based on geospatial alignment.
+    Creates overlapping patches from a satellite tile and extracts corresponding patches
+    from a full-scene ground truth mask based on geospatial alignment.
+    
+    Args:
+        tile_path (str): Path to the satellite image tile.
+        mask_path (str): Path to the corresponding ground truth mask.
+        output_mask_dir (str): Directory to save mask patches.
+        output_dir (str): Directory to save image patches.
+        patch_size (int): Size of each patch (default: 256).
+        step_size (int, optional): Step size for moving the window (default: patch_size → no overlap).
+        max_nan_ratio (float): Max allowed ratio of NaN or nodata pixels (for filtering).
+        predicted (bool): If True, avoids patching incomplete borders.
     """
     os.makedirs(output_dir, exist_ok=True)
     os.makedirs(output_mask_dir, exist_ok=True)
 
+    # Default step size = patch size (no overlap)
+    if step_size is None:
+        step_size = patch_size
+
     with rasterio.open(tile_path) as src_img, rasterio.open(mask_path) as src_mask:
         height, width = src_img.height, src_img.width
-        profile = src_img.profile
         nodata_val = src_img.nodata
 
         existing_ids = []
@@ -277,46 +292,96 @@ def create_patches(
             if match:
                 existing_ids.append(int(match.group(1)))
 
-        # Check mask patch files
         for f in os.listdir(output_mask_dir):
             match = re.match(r"patch_(\d+)_mask\.npy", f)
             if match:
                 existing_ids.append(int(match.group(1)))
+
         patch_id = max(existing_ids) + 1 if existing_ids else 0
-        for top in tqdm(range(0, height, patch_size)):
-            for left in range(0, width, patch_size):
-                if left + patch_size > width or top + patch_size > height:
+
+        for top in tqdm(range(0, height - patch_size + 1, step_size)):
+            for left in range(0, width - patch_size + 1, step_size):
+
+                # If predicted=True, skip patches that go beyond the edge
+                if predicted and (left + patch_size > width or top + patch_size > height):
                     continue
 
-                # Define image patch window
                 window = Window(left, top, patch_size, patch_size)
 
                 # Read image patch
                 patch = src_img.read(window=window)
-                nan_ratio = np.sum(patch == nodata_val) / patch.size
-                if nan_ratio > max_nan_ratio:
-                    continue
 
-                # Convert image patch window to geospatial bounds
+                if predicted:
+                    nan_ratio = np.sum(patch == nodata_val) / patch.size
+                    if nan_ratio > max_nan_ratio:
+                        continue
+                else:
+                    # Ensure full patch even near edges
+                    patch = src_img.read(window=window, boundless=True, fill_value=nodata_val if nodata_val is not None else 0)
+
+                # Get geospatial bounds
                 patch_bounds = rasterio.windows.bounds(window, src_img.transform)
 
-                # Get matching window in GT mask
+                # Get matching window in mask
                 gt_window = from_bounds(*patch_bounds, transform=src_mask.transform)
-
-                # Extract corresponding patch from GT mask
-                mask_patch = src_mask.read(1, window=gt_window)
+                mask_patch = src_mask.read(1, window=gt_window, boundless=True, fill_value=0)
 
                 # Save
                 patch_path = os.path.join(output_dir, f"patch_{patch_id:04d}.npy")
                 np.save(patch_path, patch)
-                mask_path_out = os.path.join(
-                    output_mask_dir, f"patch_{patch_id:04d}_mask.npy"
-                )
+
+                mask_path_out = os.path.join(output_mask_dir, f"patch_{patch_id:04d}_mask.npy")
                 np.save(mask_path_out, mask_patch)
 
                 patch_id += 1
 
     return patch_id
+
+
+
+def reconstruct_mask(
+    patches_dir,
+    original_shape,
+    patch_size=256,
+    step_size=128,
+):
+    """
+    Reconstruct a full-size mask from patches.
+
+    Args:
+        patches_dir (str): Directory where mask patches are saved.
+        original_shape (tuple): (height, width) of the original full mask.
+        patch_size (int): Size of each patch (e.g., 256).
+        step_size (int): Step size (e.g., 128 if 50% overlap).
+
+    Returns:
+        Reconstructed full-size mask as a numpy array.
+    """
+    height, width = original_shape
+    reconstructed = np.zeros((height, width), dtype=np.float32)
+    counter = np.zeros((height, width), dtype=np.float32)
+
+    patch_files = sorted([f for f in os.listdir(patches_dir) if f.endswith('_mask.npy')])
+
+    patch_id = 0
+    for top in range(0, height - patch_size + 1, step_size):
+        for left in range(0, width - patch_size + 1, step_size):
+            if patch_id >= len(patch_files):
+                break
+
+            patch_path = os.path.join(patches_dir, patch_files[patch_id])
+            patch = np.load(patch_path)
+
+            reconstructed[top:top+patch_size, left:left+patch_size] += patch
+            counter[top:top+patch_size, left:left+patch_size] += 1
+
+            patch_id += 1
+
+    # Avoid division by zero
+    counter[counter == 0] = 1
+    reconstructed /= counter
+
+    return reconstructed
 
 
 def generate_cloud_mask(scl_path, output_path, cloud_values=[3, 8, 9, 10]):

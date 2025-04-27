@@ -1,10 +1,8 @@
-import os
 import torch
 from torch.utils.data import Dataset
 import numpy as np
 import random
 import torchvision.transforms.functional as TF
-import math
 
 
 class SatelliteDataset(Dataset):
