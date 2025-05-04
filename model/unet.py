@@ -13,11 +13,9 @@ class DoubleConv(nn.Module):
             nn.Conv2d(in_channels, mid_channels, kernel_size=3, padding=1),
             nn.BatchNorm2d(mid_channels),
             nn.ReLU(inplace=True),
-            nn.Dropout2d(0.3),
             nn.Conv2d(mid_channels, out_channels, kernel_size=3, padding=1),
             nn.BatchNorm2d(out_channels),
             nn.ReLU(inplace=True),
-            nn.Dropout2d(0.3),
         )
 
     def forward(self, inputs):
@@ -73,6 +71,7 @@ class UNet(nn.Module):
 
         self.bottleneck = DoubleConv(channels[4], channels[4], channels[4])
 
+        # decoder blocks
         self.decoder_1 = DecoderBlock(channels[4], channels[4], channels[3])
         self.decoder_2 = DecoderBlock(channels[3], channels[3], channels[2])
         self.decoder_3 = DecoderBlock(channels[2], channels[2], channels[1])

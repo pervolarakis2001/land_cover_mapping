@@ -4,12 +4,11 @@ import numpy as np
 from rasterio.warp import calculate_default_transform, reproject
 from rasterio.enums import Resampling
 import os, re
-import gc
 from rasterio.windows import Window, from_bounds
-from shapely.geometry import box
 import matplotlib.pyplot as plt
-from s2cloudless import S2PixelCloudDetector
 from tqdm import tqdm
+import os
+import matplotlib.patches as mpatches
 
 
 def read_multiband_tiff(filepath):
@@ -257,30 +256,24 @@ def create_patches(
     output_mask_dir,
     output_dir,
     patch_size=256,
-    step_size=None,
-    max_nan_ratio=0.15,
-    predicted=False,
+    max_nan_ratio=0.25,
 ):
     """
-    Creates overlapping patches from a satellite tile and extracts corresponding patches
-    from a full-scene ground truth mask based on geospatial alignment.
-    
-    Args:
-        tile_path (str): Path to the satellite image tile.
+    Extracts spatially aligned patches from a multi-band image and its corresponding ground truth mask.
+
+    Parameters:
+        tile_path (str): Path to the input image tile (e.g., GeoTIFF).
         mask_path (str): Path to the corresponding ground truth mask.
-        output_mask_dir (str): Directory to save mask patches.
-        output_dir (str): Directory to save image patches.
-        patch_size (int): Size of each patch (default: 256).
-        step_size (int, optional): Step size for moving the window (default: patch_size → no overlap).
-        max_nan_ratio (float): Max allowed ratio of NaN or nodata pixels (for filtering).
-        predicted (bool): If True, avoids patching incomplete borders.
+        output_mask_dir (str): Directory to save the extracted mask patches.
+        output_dir (str): Directory to save the extracted image patches.
+        patch_size (int): Size (in pixels) of each square patch (default is 256).
+        max_nan_ratio (float): Maximum allowed ratio of nodata pixels per patch (default is 0.25).
+
+    Returns:
+        patch_id (int): Total number of patches successfully created and saved
     """
     os.makedirs(output_dir, exist_ok=True)
     os.makedirs(output_mask_dir, exist_ok=True)
-
-    # Default step size = patch size (no overlap)
-    if step_size is None:
-        step_size = patch_size
 
     with rasterio.open(tile_path) as src_img, rasterio.open(mask_path) as src_mask:
         height, width = src_img.height, src_img.width
@@ -299,89 +292,41 @@ def create_patches(
 
         patch_id = max(existing_ids) + 1 if existing_ids else 0
 
-        for top in tqdm(range(0, height - patch_size + 1, step_size)):
-            for left in range(0, width - patch_size + 1, step_size):
-
-                # If predicted=True, skip patches that go beyond the edge
-                if predicted and (left + patch_size > width or top + patch_size > height):
+        for top in tqdm(range(0, height, patch_size)):
+            for left in range(0, width, patch_size):
+                if left + patch_size > width or top + patch_size > height:
                     continue
-
                 window = Window(left, top, patch_size, patch_size)
 
                 # Read image patch
-                patch = src_img.read(window=window)
-
-                if predicted:
-                    nan_ratio = np.sum(patch == nodata_val) / patch.size
-                    if nan_ratio > max_nan_ratio:
-                        continue
-                else:
-                    # Ensure full patch even near edges
-                    patch = src_img.read(window=window, boundless=True, fill_value=nodata_val if nodata_val is not None else 0)
-
-                # Get geospatial bounds
+                patch = src_img.read(
+                    window=window,
+                    boundless=True,
+                    fill_value=nodata_val if nodata_val is not None else 0,
+                )
+                nan_ratio = np.sum(patch == nodata_val) / patch.size
+                if nan_ratio > max_nan_ratio:
+                    continue
                 patch_bounds = rasterio.windows.bounds(window, src_img.transform)
 
                 # Get matching window in mask
                 gt_window = from_bounds(*patch_bounds, transform=src_mask.transform)
-                mask_patch = src_mask.read(1, window=gt_window, boundless=True, fill_value=0)
+                mask_patch = src_mask.read(
+                    1, window=gt_window, boundless=True, fill_value=0
+                )
 
                 # Save
                 patch_path = os.path.join(output_dir, f"patch_{patch_id:04d}.npy")
                 np.save(patch_path, patch)
 
-                mask_path_out = os.path.join(output_mask_dir, f"patch_{patch_id:04d}_mask.npy")
+                mask_path_out = os.path.join(
+                    output_mask_dir, f"patch_{patch_id:04d}_mask.npy"
+                )
                 np.save(mask_path_out, mask_patch)
 
                 patch_id += 1
 
     return patch_id
-
-
-
-def reconstruct_mask(
-    patches_dir,
-    original_shape,
-    patch_size=256,
-    step_size=128,
-):
-    """
-    Reconstruct a full-size mask from patches.
-
-    Args:
-        patches_dir (str): Directory where mask patches are saved.
-        original_shape (tuple): (height, width) of the original full mask.
-        patch_size (int): Size of each patch (e.g., 256).
-        step_size (int): Step size (e.g., 128 if 50% overlap).
-
-    Returns:
-        Reconstructed full-size mask as a numpy array.
-    """
-    height, width = original_shape
-    reconstructed = np.zeros((height, width), dtype=np.float32)
-    counter = np.zeros((height, width), dtype=np.float32)
-
-    patch_files = sorted([f for f in os.listdir(patches_dir) if f.endswith('_mask.npy')])
-
-    patch_id = 0
-    for top in range(0, height - patch_size + 1, step_size):
-        for left in range(0, width - patch_size + 1, step_size):
-            if patch_id >= len(patch_files):
-                break
-
-            patch_path = os.path.join(patches_dir, patch_files[patch_id])
-            patch = np.load(patch_path)
-
-            reconstructed[top:top+patch_size, left:left+patch_size] += patch
-            counter[top:top+patch_size, left:left+patch_size] += 1
-
-            patch_id += 1
-
-    # Avoid division by zero
-    counter[counter == 0] = 1
-    reconstructed /= counter
-
-    return reconstructed
 
 
 def generate_cloud_mask(scl_path, output_path, cloud_values=[3, 8, 9, 10]):
@@ -409,6 +354,91 @@ def generate_cloud_mask(scl_path, output_path, cloud_values=[3, 8, 9, 10]):
         dst.write(mask, 1)
 
     return mask
+
+
+def reconstruct_mosaic(patch_dir, grid_shape, patch_size=(256, 256)):
+    """
+    Reconstructs a mosaic from saved .npy patch predictions.
+
+    Args:
+        patch_dir: Directory containing .npy prediction patches.
+        grid_shape: Tuple (rows, cols) indicating the number of patches in each dimension.
+        patch_size: Size of each patch (height, width).
+
+    Returns:
+        A NumPy array representing the full stitched mosaic.
+    """
+    rows, cols = grid_shape
+    ph, pw = patch_size
+    mosaic = np.zeros((rows * ph, cols * pw), dtype=np.uint8)
+
+    # Sort patch files to ensure correct placement
+    patch_files = sorted([f for f in os.listdir(patch_dir) if f.endswith(".npy")])
+    assert (
+        len(patch_files) == rows * cols
+    ), "Number of patches does not match grid size."
+
+    idx = 0
+    for r in range(rows):
+        for c in range(cols):
+            patch = np.load(os.path.join(patch_dir, patch_files[idx]))
+            mosaic[r * ph : (r + 1) * ph, c * pw : (c + 1) * pw] = patch
+            idx += 1
+
+    return mosaic
+
+
+def plot_prediction_vs_groundtruth(
+    pred, groundtruth_tif_path, class_colors, title="Model vs Ground Truth"
+):
+    """
+    Visualizes the predicted mosaic and the ground truth TIFF side by side,
+    using the same colormap and legend for both.
+
+    Args:
+        pred_npy_path: Path to .npy file with predicted mosaic.
+        groundtruth_tif_path: Path to ground truth .tif file.
+        class_colors: Dictionary {class_id: (label, RGB tuple)}, e.g., {10: ("Tree", (0, 100, 0))}
+        title: Title of the figure.
+    """
+
+    # Load ground truth
+    with rasterio.open(groundtruth_tif_path) as src:
+        gt = src.read(1)
+
+        # Remap ground truth from ESA codes to 0–7
+        remap_dict = {10: 0, 20: 1, 30: 2, 40: 3, 50: 4, 60: 5, 80: 6, 90: 7}
+        remapped_gt = np.full_like(gt, fill_value=255)  # fill ignored
+        for k, v in remap_dict.items():
+            remapped_gt[gt == k] = v
+
+    # Create custom colormap from RGB values
+    unique_classes = sorted(class_colors.keys())
+    color_list = [np.array(class_colors[c][1]) / 255.0 for c in unique_classes]
+    cmap = plt.matplotlib.colors.ListedColormap(color_list)
+    bounds = unique_classes + [max(unique_classes) + 1]
+    norm = plt.matplotlib.colors.BoundaryNorm(bounds, cmap.N)
+
+    # Plot
+    fig, axes = plt.subplots(1, 2, figsize=(16, 8))
+    axes[0].imshow(remapped_gt, cmap=cmap, norm=norm)
+    axes[0].set_title("Ground Truth")
+    axes[0].axis("off")
+
+    axes[1].imshow(pred, cmap=cmap, norm=norm)
+    axes[1].set_title("Model Prediction")
+    axes[1].axis("off")
+
+    # Add legend
+    legend_patches = [
+        mpatches.Patch(color=cmap(i), label=class_colors[c][0])
+        for i, c in enumerate(unique_classes)
+    ]
+    fig.legend(handles=legend_patches, loc="lower center", ncol=5, fontsize=10)
+
+    fig.suptitle(title, fontsize=14)
+    plt.tight_layout(rect=[0, 0.05, 1, 0.95])
+    plt.show()
 
 
 def visualize_tif(tif_path, output_plot_path="plot.png", bands=(4, 3, 2)):
@@ -446,10 +476,6 @@ def visualize_tif(tif_path, output_plot_path="plot.png", bands=(4, 3, 2)):
     plt.savefig(output_plot_path, dpi=300, bbox_inches="tight")
     plt.close()
     print(f"Saved plot to {output_plot_path}")
-
-
-import matplotlib.pyplot as plt
-import torch
 
 
 def visualize_samples(
@@ -493,10 +519,13 @@ def visualize_samples(
         ax_img.set_title(f"Sample {i}")
         ax_img.axis("off")
 
-        # Show mask if available
         if show_masks:
+            mask_np = y_list[i].cpu().numpy()
+            display_mask = np.copy(mask_np)
+            display_mask[display_mask == 255] = 8  # Optional: separate color for ignore
+
             ax_mask = axes[1][i] if num_samples > 1 else axes[1]
-            ax_mask.imshow(y_list[i].cpu(), cmap="tab20")
+            ax_mask.imshow(display_mask, cmap="tab20", vmin=0, vmax=8)
             ax_mask.set_title(f"Mask {i}")
             ax_mask.axis("off")
 

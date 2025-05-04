@@ -1,10 +1,9 @@
 import torch
 from tqdm import tqdm
-from torchmetrics.segmentation import DiceScore
-from torchmetrics.segmentation import MeanIoU
-import torch.nn.functional as F
+import matplotlib.pyplot as plt
 import numpy as np
 from sklearn.metrics import classification_report
+import os
 
 
 class EarlyStopping:
@@ -39,9 +38,24 @@ class EarlyStopping:
             model.load_state_dict(self.best_model_state)
 
 
-def pixel_accuracy(preds, targets):
-    correct = (preds == targets).float()
-    return correct.sum() / correct.numel()
+def compute_dice_iou(y_true, y_pred, num_classes=8):
+    dice_scores = {}
+    iou_scores = {}
+
+    for c in range(num_classes):
+        pred_c = y_pred == c
+        true_c = y_true == c
+        tp = np.logical_and(pred_c, true_c).sum()
+        fp = np.logical_and(pred_c, ~true_c).sum()
+        fn = np.logical_and(~pred_c, true_c).sum()
+
+        dice = 2 * tp / (2 * tp + fp + fn + 1e-6)
+        iou = tp / (tp + fp + fn + 1e-6)
+
+        dice_scores[c] = dice
+        iou_scores[c] = iou
+
+    return dice_scores, iou_scores
 
 
 def train_model(
@@ -50,6 +64,7 @@ def train_model(
     val_loader,
     criterion,
     optimizer,
+    scheduler=None,
     num_epochs=50,
     num_classes=8,
     save_name="best_model.pt",
@@ -58,62 +73,64 @@ def train_model(
 
     train_losses = []
     val_losses = []
-    train_accuracies = []
-    val_accuracies = []
+    train_iou = []
+    val_iou = []
     train_dice = []
     val_dice = []
 
     early_stopping = EarlyStopping(patience=5, min_delta=0.001, verbose=True)
-    # Initialize metrics
-    dice_score = DiceScore(
-        num_classes=num_classes, average="weighted", input_format="index"
-    ).to(device)
 
     for epoch in range(num_epochs):
 
         # Training phase
         model.train()
         running_loss = 0.0
-        total_acc = 0.0
-        dice_score.reset()
+        train_all_preds = []
+        train_all_labels = []
+
         for inputs, labels in tqdm(
             train_loader, desc=f"Epoch {epoch+1}/{num_epochs} [Train]"
         ):
             inputs, labels = inputs.to(device), labels.to(device)
 
-            # Zero the parameter gradients
             optimizer.zero_grad()
-
-            # Forward pass
             outputs = model(inputs)
             loss = criterion(outputs, labels)
-
-            # Backward pass and optimize
             loss.backward()
             optimizer.step()
 
-            # Statistics
             running_loss += loss.item() * inputs.size(0)
             preds = torch.argmax(outputs, dim=1)
-            dice_score.update(preds, labels)
-            acc = pixel_accuracy(preds, labels)
-            total_acc += acc.item() * inputs.size(0)
 
-        epoch_train_loss = running_loss / len(train_loader.dataset)
-        epoch_train_dice = dice_score.compute().item()
-        epoch_train_acc = total_acc / len(train_loader.dataset)
+            # Mask out ignore index 255
+            preds = preds.cpu().numpy().ravel()
+            labels = labels.cpu().numpy().ravel()
+            mask = labels != 255
 
-        train_losses.append(epoch_train_loss)
-        train_dice.append(epoch_train_dice)
-        train_accuracies.append(epoch_train_acc)
-        dice_score.reset()
+            train_all_preds.append(preds[mask])
+            train_all_labels.append(labels[mask])
+
+        y_pred = np.concatenate(train_all_preds)
+        y_true = np.concatenate(train_all_labels)
+
+        dice_per_class, iou_per_class = compute_dice_iou(
+            y_true, y_pred, num_classes=num_classes
+        )
+
+        epoch_dice = np.mean(list(dice_per_class.values()))
+        epoch_iou = np.mean(list(iou_per_class.values()))
+
+        epoch_loss = running_loss / len(train_loader.dataset)
+
+        train_losses.append(epoch_loss)
+        train_dice.append(epoch_dice)
+        train_iou.append(epoch_iou)
 
         # Validation phase
         model.eval()
         running_loss = 0.0
-        total_acc = 0.0
-        dice_score.reset()
-
+        val_all_preds = []
+        val_all_labels = []
         with torch.no_grad():
             for inputs, labels in tqdm(
                 val_loader, desc=f"Epoch {epoch+1}/{num_epochs} [Val]"
@@ -122,33 +139,52 @@ def train_model(
 
                 # Forward pass
                 outputs = model(inputs)
+
                 loss = criterion(outputs, labels)
 
                 # Statistics
                 running_loss += loss.item() * inputs.size(0)
                 preds = torch.argmax(outputs, dim=1)
-                dice_score.update(preds, labels)
-                acc = pixel_accuracy(preds, labels)
-                total_acc += acc.item() * inputs.size(0)
+
+                # Mask out ignore index 255
+                preds = preds.cpu().numpy().ravel()
+                labels = labels.cpu().numpy().ravel()
+                mask = labels != 255
+
+                val_all_preds.append(preds[mask])
+                val_all_labels.append(labels[mask])
+
+        y_pred = np.concatenate(val_all_preds)
+        y_true = np.concatenate(val_all_labels)
+
+        dice_per_class, iou_per_class = compute_dice_iou(
+            y_true, y_pred, num_classes=num_classes
+        )
+
+        epoch_val_dice = np.mean(list(dice_per_class.values()))
+        epoch_val_iou = np.mean(list(iou_per_class.values()))
 
         epoch_val_loss = running_loss / len(val_loader.dataset)
-        epoch_val_dice = dice_score.compute().item()
-        epoch_val_acc = total_acc / len(val_loader.dataset)
 
         val_losses.append(epoch_val_loss)
         val_dice.append(epoch_val_dice)
-        val_accuracies.append(epoch_val_acc)
-        dice_score.reset()
+        val_iou.append(epoch_val_iou)
 
         print(
             f"Epoch {epoch+1}/{num_epochs} | "
-            f"Train Loss: {epoch_train_loss:.4f} | "
-            f"Train Acc: {epoch_train_acc:.4f} | "
-            f"Train Dice: {epoch_train_dice:.4f} || "
+            f"Train Loss: {epoch_loss:.4f} | "
+            f"Train Dice: {epoch_dice:.4f} || "
+            f"Train IoU: {epoch_iou:.4f} || "
             f"Val Loss: {epoch_val_loss:.4f} | "
-            f"Val Acc: {epoch_val_acc:.4f} | "
-            f"Val Dice: {epoch_val_dice:.4f}"
+            f"Val Dice: {epoch_val_dice:.4f} |"
+            f"Val IoU: {epoch_val_iou:.4f}  "
         )
+
+        if scheduler is not None:
+            if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+                scheduler.step(epoch_val_loss)  #
+            else:
+                scheduler.step()
 
         early_stopping(epoch_val_loss, model)
         if early_stopping.early_stop:
@@ -160,67 +196,14 @@ def train_model(
     return (
         train_losses,
         val_losses,
-        train_accuracies,
-        val_accuracies,
         train_dice,
         val_dice,
+        train_iou,
+        val_iou,
     )
 
 
-def evaluate_model(model, test_loader, criterion=None, num_classes=8):
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model.to(device)
-    model.eval()
-
-    running_loss = 0.0
-    total_acc = 0.0
-
-    # Initialize Dice metric
-    dice_score = DiceScore(
-        num_classes=num_classes, average="weighted", input_format="index"
-    ).to(device)
-    iou_score = MeanIoU(num_classes=num_classes, input_format="index").to(device)
-
-    with torch.no_grad():
-        for inputs, labels in tqdm(test_loader, desc="Evaluating"):
-            inputs, labels = inputs.to(device), labels.to(device)
-
-            outputs = model(inputs)
-            if criterion:
-                loss = criterion(outputs, labels)
-                running_loss += loss.item() * inputs.size(0)
-
-            # Statistics
-            preds = torch.argmax(outputs, dim=1)
-            acc = pixel_accuracy(preds, labels)
-
-            dice_score.update(preds, labels)
-            iou_score.update(preds, labels)
-            total_acc += acc.item() * inputs.size(0)
-    if criterion:
-        avg_loss = running_loss / len(test_loader.dataset)
-        loss_str = f"Loss: {avg_loss:.4f}"
-    else:
-        avg_loss = None
-        loss_str = ""
-    avg_dice = dice_score.compute().item()
-    avg_iou = iou_score.compute().item()
-    avg_acc = total_acc / len(test_loader.dataset)
-    dice_score.reset()
-    iou_score.reset()
-
-    print(f"\n Evaluation Results:")
-    print(
-        f" { loss_str} | Pixel Accuracy: {avg_acc * 100:.2f}% | Dice Score: {avg_dice:.4f} | Mean IoUScore: {avg_iou:.4f}"
-    )
-
-    return avg_loss, avg_acc, avg_dice
-
-
-import matplotlib.pyplot as plt
-
-
-def plot_history(train_losses, val_losses, train_accs, val_accs, train_dice, val_dice):
+def plot_history(train_losses, val_losses, train_dice, val_dice, train_iou, val_iou):
     plt.figure(figsize=(18, 5))
 
     # Plot Loss
@@ -232,22 +215,22 @@ def plot_history(train_losses, val_losses, train_accs, val_accs, train_dice, val
     plt.title("Loss")
     plt.legend()
 
-    # Plot Accuracy
-    plt.subplot(1, 3, 2)
-    plt.plot(train_accs, label="Training Accuracy")
-    plt.plot(val_accs, label="Validation Accuracy")
-    plt.xlabel("Epoch")
-    plt.ylabel("Accuracy (%)")
-    plt.title("Pixel Accuracy")
-    plt.legend()
-
     # Plot Dice Score
-    plt.subplot(1, 3, 3)
+    plt.subplot(1, 3, 2)  # <-- changed from (1,2,3) to (1,3,2)
     plt.plot(train_dice, label="Training Dice")
     plt.plot(val_dice, label="Validation Dice")
     plt.xlabel("Epoch")
     plt.ylabel("Dice Score")
     plt.title("Dice Score")
+    plt.legend()
+
+    # Plot IoU Score
+    plt.subplot(1, 3, 3)
+    plt.plot(train_iou, label="Training IoU")
+    plt.plot(val_iou, label="Validation IoU")
+    plt.xlabel("Epoch")
+    plt.ylabel("IoU Score")
+    plt.title("IoU Score")
     plt.legend()
 
     plt.tight_layout()
@@ -280,18 +263,52 @@ def segmentation_report(model, loader, num_classes=8):
         zero_division=0,
     )
 
-    dice_scores = {}
-    for c in range(num_classes):
-        pred_c = (y_pred == c).astype(np.uint8)
-        true_c = (y_true == c).astype(np.uint8)
-        tp = np.logical_and(pred_c, true_c).sum()
-        fp = np.logical_and(pred_c, 1 - true_c).sum()
-        fn = np.logical_and(1 - pred_c, true_c).sum()
-
-        dice = 2 * tp / (2 * tp + fp + fn + 1e-6)
-        dice_scores[f"Class {c}"] = dice
+    dice_scores, iou_scores = compute_dice_iou(y_true, y_pred)
     print("=== Classification Report ===")
     print(cls_report)
     print("=== Dice per Class ===")
     for cls, score in dice_scores.items():
         print(f"{cls}: {score:.4f}")
+
+    print("\n=== IoU per Class ===")
+    for cls, score in iou_scores.items():
+        print(f"{cls}: {score:.4f}")
+
+    # after you fill dice_scores and iou_scores dicts:
+    macro_dice = np.mean(list(dice_scores.values()))
+    macro_iou = np.mean(list(iou_scores.values()))
+    print("\n === Overall Performance === ")
+    print(f"Macro-Dice: {macro_dice:.4f}")
+    print(f"Macro-IoU : {macro_iou:.4f}")
+
+
+def save_predictions_patches(model, loader, output_dir, device="cuda"):
+    """
+    Applies a trained model to a DataLoader and saves each predicted mask as a .npy file.
+
+    Parameters:
+        model: Trained segmentation model (e.g., U-Net).
+        loader: PyTorch DataLoader yielding (image, label) or (image,) pairs.
+        output_dir: Directory to save predicted mask patches.
+        device: 'cpu' or 'cuda'.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    model.eval()
+
+    with torch.no_grad():
+        idx = 0
+        for batch in loader:
+            if len(batch) == 2:
+                imgs, _ = batch
+            else:
+                imgs = batch[0]
+
+            imgs = imgs.to(device)
+            logits = model(imgs)
+            preds = torch.argmax(logits, dim=1)
+
+            for pred in preds:
+                pred_np = pred.cpu().numpy().astype(np.uint8)
+                file_path = os.path.join(output_dir, f"pred_{idx:05d}.npy")
+                np.save(file_path, pred_np)
+                idx += 1

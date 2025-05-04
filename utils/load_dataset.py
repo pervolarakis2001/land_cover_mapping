@@ -10,34 +10,41 @@ class SatelliteDataset(Dataset):
         self.image_paths = image_paths
         self.mask_paths = mask_paths
         self.transform = transform
-
         self.label_mapping = {10: 0, 20: 1, 30: 2, 40: 3, 50: 4, 60: 5, 80: 6, 90: 7}
 
     def __len__(self):
         return len(self.image_paths)
 
     def __getitem__(self, idx):
+        # Load raw data
         image = np.load(self.image_paths[idx]).astype(np.float32)
         mask = np.load(self.mask_paths[idx]).astype(np.int64)
 
-        if self.transform:
-            image = torch.from_numpy(image)
-            image = self.transform(image)
-        else:
-            image = torch.from_numpy(image)
+        invalid_mask = image == -9999
 
+        image[invalid_mask] = 0.0
+
+        # Apply label remapping
         for k, v in self.label_mapping.items():
             mask[mask == k] = v
-        mask = torch.from_numpy(mask)
+
+        # Set mask to 255 (ignore) where all bands are nodata
+        if image.ndim == 3:
+            mask[np.all(invalid_mask, axis=0)] = 255
+
+        image = torch.from_numpy(image)
+        mask = torch.from_numpy(mask).long()
+
+        if self.transform:
+            image = self.transform(image)
 
         return image, mask
 
 
 class Normalize13Band:
     def __call__(self, x):
-        return (
-            x / 10000.0
-        )  # normalization the same as the base pretrained model (ResNet18_Weights.SENTINEL2_ALL_MOCO)
+        # normalization the same as the base pretrained model (ResNet18_Weights.SENTINEL2_ALL_MOCO)
+        return x / 10000.0
 
 
 class AddGaussianNoise:
@@ -96,7 +103,7 @@ class Compose:
         else:
             for t in self.transforms:
                 x = t(x)
-            return x
+            return x, y
 
 
 class TorchDataset(torch.utils.data.Dataset):

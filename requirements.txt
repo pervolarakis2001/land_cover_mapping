@@ -9,3 +9,5 @@ scikit-learn
 torchgeo
 torchsummary
 torchmetrics
+albumentations
+patchify
