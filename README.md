@@ -1,4 +1,4 @@
-# BDEO EXERCISE 1
+# Land Cover Mapping on Satelite Images
 
 ## About
 This project implements a semantic segmentation pipeline using a U-Net architecture with a ResNet18 encoder pretrained on Sentinel-2 data. It includes preprocessing, patch creation, model training, fine-tuning, and evaluation for classifying land cover types from multi-spectral satellite imagery.
